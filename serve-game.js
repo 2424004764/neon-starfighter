@@ -4,7 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = 'D:/dev/mini-micro-mp/neon-starfighter/build/web-mobile';
+const ROOT = 'D:/dev/mini-micro-mp/neon-deep-space/build/web-mobile';
 const PORT = process.argv[2] || 8080;
 
 const MIME = {
@@ -42,5 +42,6 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
     console.log('Neon Starfighter (neon-starfighter) serving at http://localhost:' + PORT);
 });
+
 
 
