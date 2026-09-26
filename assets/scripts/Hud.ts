@@ -30,6 +30,7 @@ export class Hud extends Component {
         magnet: { char: '磁', color: new Color(103, 232, 249) },
         rage: { char: '狂', color: new Color(244, 63, 94) },
         xp2: { char: '倍', color: new Color(251, 191, 36) },
+        invinc: { char: '无', color: new Color(255, 223, 128) },
         shield: { char: '盾', color: new Color(148, 163, 184) },
     };
 
@@ -168,6 +169,9 @@ export class Hud extends Component {
         }
         if (root.effectXp2 > 0) {
             wanted.push({ key: 'xp2', frac: root.effectXp2 / GameRoot.EFFECT_DURATION.xp2 });
+        }
+        if (root.effectInvinc > 0) {
+            wanted.push({ key: 'invinc', frac: root.effectInvinc / GameRoot.EFFECT_DURATION.invinc });
         }
         if (root.stats.shieldMax > 0) {
             // 护盾：就绪时常亮满条；破碎后显示充能进度

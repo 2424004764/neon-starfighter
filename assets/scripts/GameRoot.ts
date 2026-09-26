@@ -21,7 +21,7 @@ export class GameRoot extends Component {
     public static I: GameRoot = null!;
 
     /** 道具效果持续时长（秒），Hud 状态栏与效果计时共用 */
-    public static readonly EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12 };
+    public static readonly EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12, invinc: 5 };
 
     public state: 'menu' | 'playing' | 'paused' | 'levelup' | 'gameover' = 'menu';
     public stats: Stats = createBaseStats();
@@ -43,6 +43,7 @@ export class GameRoot extends Component {
     public effectMagnet = 0;
     public effectRage = 0;
     public effectXp2 = 0;
+    public effectInvinc = 0;
 
     private ready = false;
     private pendingLevelUps = 0;
@@ -336,6 +337,7 @@ export class GameRoot extends Component {
         if (this.effectMagnet > 0) { this.effectMagnet -= dt; }
         if (this.effectRage > 0) { this.effectRage -= dt; }
         if (this.effectXp2 > 0) { this.effectXp2 -= dt; }
+        if (this.effectInvinc > 0) { this.effectInvinc -= dt; }
 
         if (this.pendingLevelUps > 0) {
             this.state = 'levelup';
@@ -548,7 +550,7 @@ export class GameRoot extends Component {
 
     // ---------------- 随机道具 ----------------
 
-    private static POWER_KINDS: PowerUpKind[] = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'crit', 'shield', 'xp2'];
+    private static POWER_KINDS: PowerUpKind[] = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'crit', 'invinc', 'shield', 'xp2'];
 
     public getPowerUp(): PowerUp {
         let u = this.powerPool.pop();
@@ -585,6 +587,9 @@ export class GameRoot extends Component {
         switch (kind) {
             case 'magnet':
                 this.effectMagnet = D.magnet;
+                break;
+            case 'invinc':
+                this.effectInvinc = D.invinc;
                 break;
             case 'vacuum':
                 this.vacuumGems(); // 立即吸附全场所有能量
@@ -774,6 +779,7 @@ export class GameRoot extends Component {
         this.effectMagnet = 0;
         this.effectRage = 0;
         this.effectXp2 = 0;
+        this.effectInvinc = 0;
 
         this.stats = createBaseStats();
         this.level = 1;

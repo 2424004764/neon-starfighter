@@ -2,7 +2,7 @@ import { _decorator, Component, Node, Color, Graphics, Label, UITransform } from
 import { GameRoot } from './GameRoot';
 const { ccclass } = _decorator;
 
-export type PowerUpKind = 'magnet' | 'vacuum' | 'rage' | 'heal1' | 'heal3' | 'crit' | 'shield' | 'xp2';
+export type PowerUpKind = 'magnet' | 'vacuum' | 'rage' | 'heal1' | 'heal3' | 'crit' | 'invinc' | 'shield' | 'xp2';
 
 const KIND_DEFS: Record<PowerUpKind, { char: string; color: Color }> = {
     magnet: { char: '磁', color: new Color(103, 232, 249) },
@@ -11,6 +11,7 @@ const KIND_DEFS: Record<PowerUpKind, { char: string; color: Color }> = {
     heal1: { char: '愈', color: new Color(134, 239, 172) },
     heal3: { char: '疗', color: new Color(16, 185, 129) },
     crit: { char: '暴', color: new Color(255, 138, 61) },
+    invinc: { char: '无', color: new Color(255, 223, 128) },
     shield: { char: '盾', color: new Color(148, 163, 184) },
     xp2: { char: '倍', color: new Color(251, 191, 36) },
 };

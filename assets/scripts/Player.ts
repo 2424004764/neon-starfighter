@@ -23,6 +23,7 @@ export class Player extends Component {
     private classicNode: Node = null!;
     private skinIndex = 0; // 0=霓虹箭形 1=经典战机
     private flameNode: Node = null!;
+    private invincRing: Node = null!;
     private shieldRing: Node = null!;
     public orbNodes: Node[] = [];
     public orbCds: number[] = [];
@@ -136,6 +137,20 @@ export class Player extends Component {
         sg.circle(0, 0, 41);
         sg.stroke();
         this.shieldRing.active = false;
+
+        // 无敌道具光环（金色双环，激活时旋转）
+        this.invincRing = new Node('invincRing');
+        this.node.addChild(this.invincRing);
+        const ig = this.invincRing.addComponent(Graphics);
+        ig.strokeColor = new Color(255, 213, 79, 220);
+        ig.lineWidth = 4;
+        ig.circle(0, 0, 45);
+        ig.stroke();
+        ig.strokeColor = new Color(255, 236, 160, 90);
+        ig.lineWidth = 8;
+        ig.circle(0, 0, 52);
+        ig.stroke();
+        this.invincRing.active = false;
     }
 
     public resetState() {
@@ -245,6 +260,14 @@ export class Player extends Component {
         this.shieldRing.active = stats.shield >= 1;
         this.shieldRing.angle += 40 * dt;
 
+        // 无敌道具光环
+        this.invincRing.active = root.effectInvinc > 0;
+        if (this.invincRing.active) {
+            this.invincRing.angle += 120 * dt;
+            const pulse = 1 + 0.05 * Math.sin(this.animT * 8);
+            this.invincRing.setScale(pulse, pulse, 1);
+        }
+
         // 环绕电球
         this.syncOrbs();
         this.orbAngle += ORBIT_SPEED * dt;
@@ -291,9 +314,11 @@ export class Player extends Component {
         SoundFX.I.shoot();
     }
 
-    /** 受到伤害，返回是否死亡（护盾优先抵挡） */
+    /** 受到伤害，返回是否死亡（无敌道具优先，其次护盾） */
     public takeDamage(dmg: number): boolean {
         if (this.invincible > 0 || this.dying) return false;
+        // 无敌道具生效期间完全免疫
+        if (GameRoot.I.effectInvinc > 0) return false;
 
         const root = GameRoot.I;
         const stats = root.stats;

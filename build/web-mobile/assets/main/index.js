@@ -592,6 +592,7 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           _this.effectMagnet = 0;
           _this.effectRage = 0;
           _this.effectXp2 = 0;
+          _this.effectInvinc = 0;
           _this.ready = false;
           _this.pendingLevelUps = 0;
           _this.spawnTimer = 0;
@@ -904,6 +905,9 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           if (this.effectXp2 > 0) {
             this.effectXp2 -= dt;
           }
+          if (this.effectInvinc > 0) {
+            this.effectInvinc -= dt;
+          }
           if (this.pendingLevelUps > 0) {
             this.state = 'levelup';
             SoundFX.I.levelup();
@@ -1172,6 +1176,9 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
             case 'magnet':
               this.effectMagnet = D.magnet;
               break;
+            case 'invinc':
+              this.effectInvinc = D.invinc;
+              break;
             case 'vacuum':
               this.vacuumGems(); // 立即吸附全场所有能量
               break;
@@ -1405,6 +1412,7 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           this.effectMagnet = 0;
           this.effectRage = 0;
           this.effectXp2 = 0;
+          this.effectInvinc = 0;
           this.stats = createBaseStats();
           this.level = 1;
           this.xp = 0;
@@ -1425,8 +1433,9 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
         magnet: 6,
         rage: 8,
         xp2: 10,
-        shieldRecharge: 12
-      }, _class2.POWER_KINDS = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'crit', 'shield', 'xp2'], _class2)) || _class) || _class));
+        shieldRecharge: 12,
+        invinc: 5
+      }, _class2.POWER_KINDS = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'crit', 'invinc', 'shield', 'xp2'], _class2)) || _class) || _class));
       cclegacy._RF.pop();
     }
   };
@@ -1725,6 +1734,12 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
               frac: root.effectXp2 / GameRoot.EFFECT_DURATION.xp2
             });
           }
+          if (root.effectInvinc > 0) {
+            wanted.push({
+              key: 'invinc',
+              frac: root.effectInvinc / GameRoot.EFFECT_DURATION.invinc
+            });
+          }
           if (root.stats.shieldMax > 0) {
             // 护盾：就绪时常亮满条；破碎后显示充能进度
             var ready = root.stats.shield >= 1;
@@ -1803,6 +1818,10 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
         xp2: {
           "char": '倍',
           color: new Color(251, 191, 36)
+        },
+        invinc: {
+          "char": '无',
+          color: new Color(255, 223, 128)
         },
         shield: {
           "char": '盾',
@@ -2370,6 +2389,7 @@ System.register("chunks:///_virtual/Player.ts", ['./rollupPluginModLoBabelHelper
           _this.skinIndex = 0;
           // 0=霓虹箭形 1=经典战机
           _this.flameNode = null;
+          _this.invincRing = null;
           _this.shieldRing = null;
           _this.orbNodes = [];
           _this.orbCds = [];
@@ -2514,6 +2534,20 @@ System.register("chunks:///_virtual/Player.ts", ['./rollupPluginModLoBabelHelper
           sg.circle(0, 0, 41);
           sg.stroke();
           this.shieldRing.active = false;
+
+          // 无敌道具光环（金色双环，激活时旋转）
+          this.invincRing = new Node('invincRing');
+          this.node.addChild(this.invincRing);
+          var ig = this.invincRing.addComponent(Graphics);
+          ig.strokeColor = new Color(255, 213, 79, 220);
+          ig.lineWidth = 4;
+          ig.circle(0, 0, 45);
+          ig.stroke();
+          ig.strokeColor = new Color(255, 236, 160, 90);
+          ig.lineWidth = 8;
+          ig.circle(0, 0, 52);
+          ig.stroke();
+          this.invincRing.active = false;
         };
         _proto.resetState = function resetState() {
           this.target = null;
@@ -2618,6 +2652,14 @@ System.register("chunks:///_virtual/Player.ts", ['./rollupPluginModLoBabelHelper
           this.shieldRing.active = stats.shield >= 1;
           this.shieldRing.angle += 40 * dt;
 
+          // 无敌道具光环
+          this.invincRing.active = root.effectInvinc > 0;
+          if (this.invincRing.active) {
+            this.invincRing.angle += 120 * dt;
+            var pulse = 1 + 0.05 * Math.sin(this.animT * 8);
+            this.invincRing.setScale(pulse, pulse, 1);
+          }
+
           // 环绕电球
           this.syncOrbs();
           this.orbAngle += ORBIT_SPEED * dt;
@@ -2665,9 +2707,11 @@ System.register("chunks:///_virtual/Player.ts", ['./rollupPluginModLoBabelHelper
           SoundFX.I.shoot();
         }
 
-        /** 受到伤害，返回是否死亡（护盾优先抵挡） */;
+        /** 受到伤害，返回是否死亡（无敌道具优先，其次护盾） */;
         _proto.takeDamage = function takeDamage(dmg) {
           if (this.invincible > 0 || this.dying) return false;
+          // 无敌道具生效期间完全免疫
+          if (GameRoot.I.effectInvinc > 0) return false;
           var root = GameRoot.I;
           var stats = root.stats;
           if (stats.shieldMax > 0 && stats.shield >= 1) {
@@ -2749,6 +2793,10 @@ System.register("chunks:///_virtual/PowerUp.ts", ['./rollupPluginModLoBabelHelpe
         crit: {
           "char": '暴',
           color: new Color(255, 138, 61)
+        },
+        invinc: {
+          "char": '无',
+          color: new Color(255, 223, 128)
         },
         shield: {
           "char": '盾',
