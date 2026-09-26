@@ -29,6 +29,7 @@ export class Overlays extends Component {
     private gameOverPanel: Node = null!;
     private pausePanel: Node = null!;
     private pauseStatLabels: { label: Label; value: Label }[] = [];
+    private menuPanel: Node = null!;
     private cardRoot: Node = null!;
     private statLabels: Label[] = [];
 
@@ -122,7 +123,40 @@ export class Overlays extends Component {
             this.pauseStatLabels.push({ label, value });
         });
 
-        this.hideAll();
+        // ---- 开始界面 ----
+        this.menuPanel = new Node('MenuPanel');
+        this.node.addChild(this.menuPanel);
+        this.makeLabel(this.menuPanel, 64, new Color(103, 232, 249), 0, 300, 'NEON');
+        this.makeLabel(this.menuPanel, 64, Color.WHITE, 0, 226, 'STARFIGHTER');
+        this.makeLabel(this.menuPanel, 30, new Color(148, 163, 184), 0, 150, '霓 虹 星 际 战 机');
+        this.makeLabel(this.menuPanel, 18, new Color(103, 232, 249, 160), 0, 96, '- - - ✦ - - -');
+
+        const startBtn = new Node('StartBtn');
+        startBtn.addComponent(UITransform).setContentSize(320, 92);
+        const sg = startBtn.addComponent(Graphics);
+        sg.fillColor = new Color(103, 232, 249);
+        sg.roundRect(-160, -46, 320, 92, 18);
+        sg.fill();
+        sg.strokeColor = new Color(224, 255, 255);
+        sg.lineWidth = 4;
+        sg.roundRect(-160, -46, 320, 92, 18);
+        sg.stroke();
+        startBtn.setPosition(0, -10, 0);
+        this.makeLabel(startBtn, 32, new Color(8, 20, 30), 0, 0, '开始新游戏');
+        startBtn.on(Node.EventType.TOUCH_END, () => { GameRoot.I.startGame(); });
+        this.menuPanel.addChild(startBtn);
+
+        this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -110, '点击按钮 或 按 空格 开始');
+        this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -190, 'WASD / 方向键 / 按住拖动  移动');
+        this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -228, '空格 / Esc  暂停      V  切换战机');
+        this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -266, '击杀敌机 · 拾取强化 · 活下去');
+
+        // GameRoot.onLoad 早于本 start：按当前状态决定初始显示（开局进开始界面）
+        if (GameRoot.I.state === 'menu') {
+            this.showMenu();
+        } else {
+            this.hideAll();
+        }
     }
 
     // ---------------- 升级三选一 ----------------
@@ -232,9 +266,14 @@ export class Overlays extends Component {
         this.pausePanel.active = true;
     }
 
+    public showMenu() {
+        if (this.menuPanel) { this.menuPanel.active = true; }
+    }
+
     public hideAll() {
         if (this.levelUpPanel) { this.levelUpPanel.active = false; }
         if (this.gameOverPanel) { this.gameOverPanel.active = false; }
         if (this.pausePanel) { this.pausePanel.active = false; }
+        if (this.menuPanel) { this.menuPanel.active = false; }
     }
 }

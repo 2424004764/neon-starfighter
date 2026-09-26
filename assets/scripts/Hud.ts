@@ -22,6 +22,7 @@ export class Hud extends Component {
     private bossFill: Node = null!;
     private buffChips: Map<string, BuffChip> = new Map();
     private buffRow: Node = null!;
+    private hudRoot: Node = null!;
     private hpBarW = 300;
     private xpBarW = 720;
 
@@ -73,12 +74,15 @@ export class Hud extends Component {
         const half = GameRoot.I.halfSize;
         const left = -half.x + 16;
         const top = half.y;
-        const root = this.node;
+        // HUD 独立容器：开始界面时只隐藏这一层，不影响 Canvas 上其他组件
+        this.hudRoot = new Node('HudRoot');
+        this.node.addChild(this.hudRoot);
+        const root = this.hudRoot;
 
         // 血条
         this.hpBarW = 300;
         this.makeBar(root, this.hpBarW, 22, new Color(0, 0, 0, 120), new Color(102, 187, 106), left, top - 34);
-        this.hpFill = this.node.children[this.node.children.length - 1].getChildByName('bar-fill')!.getComponent(Graphics)!;
+        this.hpFill = root.children[root.children.length - 1].getChildByName('bar-fill')!.getComponent(Graphics)!;
         this.hpLabel = this.makeLabel(root, 14, Color.WHITE, left + this.hpBarW / 2, top - 34);
 
         // 等级
@@ -99,7 +103,7 @@ export class Hud extends Component {
         // Boss 血条（顶部中央，默认隐藏）
         this.bossRoot = new Node('BossBar');
         this.bossRoot.setPosition(0, top - 150, 0);
-        this.node.addChild(this.bossRoot);
+        root.addChild(this.bossRoot);
         this.makeLabel(this.bossRoot, 18, new Color(255, 120, 120), 0, 22, 'BOSS');
         const bossBar = this.makeBar(this.bossRoot, 480, 16, new Color(0, 0, 0, 120), new Color(224, 85, 110), -240, 0);
         this.bossFill = bossBar.fill;
@@ -108,7 +112,15 @@ export class Hud extends Component {
         // 道具状态栏（经验条下方，图标块 + 剩余时间条）
         this.buffRow = new Node('BuffRow');
         this.buffRow.setPosition(left + 20, top - 128, 0);
-        this.node.addChild(this.buffRow);
+        root.addChild(this.buffRow);
+
+        // 按 GameRoot 当前状态决定初始显隐
+        this.hudRoot.active = GameRoot.I.state !== 'menu';
+    }
+
+    /** 显示/隐藏整个 HUD（开始界面时隐藏） */
+    public setHidden(hidden: boolean) {
+        if (this.hudRoot) { this.hudRoot.active = !hidden; }
     }
 
     /** 创建一个道具状态图标块 */

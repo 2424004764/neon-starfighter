@@ -574,7 +574,7 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
             args[_key] = arguments[_key];
           }
           _this = _Component.call.apply(_Component, [this].concat(args)) || this;
-          _this.state = 'playing';
+          _this.state = 'menu';
           _this.stats = createBaseStats();
           _this.level = 1;
           _this.xp = 0;
@@ -652,6 +652,10 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           this.overlays = this.node.addComponent(Overlays);
           this.ready = true;
           this.restart();
+          // 进入开始界面：点「开始新游戏」或按空格才正式开局
+          this.hud.setHidden(true);
+          this.state = 'menu';
+          this.overlays.showMenu();
         }
 
         /** 星云色块 + 三层视差星空（范围限定在画幅内） */;
@@ -779,8 +783,14 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           return n.getComponent(Graphics) || n.addComponent(Graphics);
         }
 
-        /** 键盘：升级选卡用 W/S/空格；其余时候 Esc/空格 切换暂停 */;
+        /** 键盘：升级选卡用 W/S/空格；开始界面空格开局；其余时候 Esc/空格 切换暂停 */;
         _proto.onKeyDown = function onKeyDown(e) {
+          if (this.state === 'menu') {
+            if (e.keyCode === KeyCode.SPACE || e.keyCode === KeyCode.ENTER) {
+              this.startGame();
+            }
+            return;
+          }
           if (this.state === 'levelup') {
             if (e.keyCode === KeyCode.KEY_W || e.keyCode === KeyCode.ARROW_UP) {
               this.overlays.moveSel(-1);
@@ -794,6 +804,15 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
           if (e.keyCode === KeyCode.ESCAPE || e.keyCode === KeyCode.SPACE) {
             this.togglePause();
           }
+        }
+
+        /** 从开始界面正式开局 */;
+        _proto.startGame = function startGame() {
+          if (this.state !== 'menu') return;
+          this.hud.setHidden(false);
+          this.overlays.hideAll();
+          this.restart();
+          SoundFX.I.pick();
         }
 
         /** 暂停 / 继续游戏（升级选择与结算界面时无效） */;
@@ -870,7 +889,7 @@ System.register("chunks:///_virtual/GameRoot.ts", ['./rollupPluginModLoBabelHelp
               this.meteors.splice(i, 1);
             }
           }
-          if (this.state === 'gameover' || this.state === 'levelup') return;
+          if (this.state !== 'playing') return;
           this.elapsed += dt;
           this.spawnLogic(dt);
           this.checkCollisions();
@@ -1547,6 +1566,7 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
           _this.bossFill = null;
           _this.buffChips = new Map();
           _this.buffRow = null;
+          _this.hudRoot = null;
           _this.hpBarW = 300;
           _this.xpBarW = 720;
           return _this;
@@ -1595,12 +1615,15 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
           var half = GameRoot.I.halfSize;
           var left = -half.x + 16;
           var top = half.y;
-          var root = this.node;
+          // HUD 独立容器：开始界面时只隐藏这一层，不影响 Canvas 上其他组件
+          this.hudRoot = new Node('HudRoot');
+          this.node.addChild(this.hudRoot);
+          var root = this.hudRoot;
 
           // 血条
           this.hpBarW = 300;
           this.makeBar(root, this.hpBarW, 22, new Color(0, 0, 0, 120), new Color(102, 187, 106), left, top - 34);
-          this.hpFill = this.node.children[this.node.children.length - 1].getChildByName('bar-fill').getComponent(Graphics);
+          this.hpFill = root.children[root.children.length - 1].getChildByName('bar-fill').getComponent(Graphics);
           this.hpLabel = this.makeLabel(root, 14, Color.WHITE, left + this.hpBarW / 2, top - 34);
 
           // 等级
@@ -1621,7 +1644,7 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
           // Boss 血条（顶部中央，默认隐藏）
           this.bossRoot = new Node('BossBar');
           this.bossRoot.setPosition(0, top - 150, 0);
-          this.node.addChild(this.bossRoot);
+          root.addChild(this.bossRoot);
           this.makeLabel(this.bossRoot, 18, new Color(255, 120, 120), 0, 22, 'BOSS');
           var bossBar = this.makeBar(this.bossRoot, 480, 16, new Color(0, 0, 0, 120), new Color(224, 85, 110), -240, 0);
           this.bossFill = bossBar.fill;
@@ -1630,7 +1653,17 @@ System.register("chunks:///_virtual/Hud.ts", ['./rollupPluginModLoBabelHelpers.j
           // 道具状态栏（经验条下方，图标块 + 剩余时间条）
           this.buffRow = new Node('BuffRow');
           this.buffRow.setPosition(left + 20, top - 128, 0);
-          this.node.addChild(this.buffRow);
+          root.addChild(this.buffRow);
+
+          // 按 GameRoot 当前状态决定初始显隐
+          this.hudRoot.active = GameRoot.I.state !== 'menu';
+        }
+
+        /** 显示/隐藏整个 HUD（开始界面时隐藏） */;
+        _proto.setHidden = function setHidden(hidden) {
+          if (this.hudRoot) {
+            this.hudRoot.active = !hidden;
+          }
         }
 
         /** 创建一个道具状态图标块 */;
@@ -2020,6 +2053,7 @@ System.register("chunks:///_virtual/Overlays.ts", ['./rollupPluginModLoBabelHelp
           _this.gameOverPanel = null;
           _this.pausePanel = null;
           _this.pauseStatLabels = [];
+          _this.menuPanel = null;
           _this.cardRoot = null;
           _this.statLabels = [];
           // ---------------- 升级三选一 ----------------
@@ -2122,7 +2156,41 @@ System.register("chunks:///_virtual/Overlays.ts", ['./rollupPluginModLoBabelHelp
               value: value
             });
           });
-          this.hideAll();
+
+          // ---- 开始界面 ----
+          this.menuPanel = new Node('MenuPanel');
+          this.node.addChild(this.menuPanel);
+          this.makeLabel(this.menuPanel, 64, new Color(103, 232, 249), 0, 300, 'NEON');
+          this.makeLabel(this.menuPanel, 64, Color.WHITE, 0, 226, 'STARFIGHTER');
+          this.makeLabel(this.menuPanel, 30, new Color(148, 163, 184), 0, 150, '霓 虹 星 际 战 机');
+          this.makeLabel(this.menuPanel, 18, new Color(103, 232, 249, 160), 0, 96, '- - - ✦ - - -');
+          var startBtn = new Node('StartBtn');
+          startBtn.addComponent(UITransform).setContentSize(320, 92);
+          var sg = startBtn.addComponent(Graphics);
+          sg.fillColor = new Color(103, 232, 249);
+          sg.roundRect(-160, -46, 320, 92, 18);
+          sg.fill();
+          sg.strokeColor = new Color(224, 255, 255);
+          sg.lineWidth = 4;
+          sg.roundRect(-160, -46, 320, 92, 18);
+          sg.stroke();
+          startBtn.setPosition(0, -10, 0);
+          this.makeLabel(startBtn, 32, new Color(8, 20, 30), 0, 0, '开始新游戏');
+          startBtn.on(Node.EventType.TOUCH_END, function () {
+            GameRoot.I.startGame();
+          });
+          this.menuPanel.addChild(startBtn);
+          this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -110, '点击按钮 或 按 空格 开始');
+          this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -190, 'WASD / 方向键 / 按住拖动  移动');
+          this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -228, '空格 / Esc  暂停      V  切换战机');
+          this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -266, '击杀敌机 · 拾取强化 · 活下去');
+
+          // GameRoot.onLoad 早于本 start：按当前状态决定初始显示（开局进开始界面）
+          if (GameRoot.I.state === 'menu') {
+            this.showMenu();
+          } else {
+            this.hideAll();
+          }
         };
         _proto.showLevelUp = function showLevelUp(choices) {
           var _this3 = this;
@@ -2221,6 +2289,11 @@ System.register("chunks:///_virtual/Overlays.ts", ['./rollupPluginModLoBabelHelp
           });
           this.pausePanel.active = true;
         };
+        _proto.showMenu = function showMenu() {
+          if (this.menuPanel) {
+            this.menuPanel.active = true;
+          }
+        };
         _proto.hideAll = function hideAll() {
           if (this.levelUpPanel) {
             this.levelUpPanel.active = false;
@@ -2230,6 +2303,9 @@ System.register("chunks:///_virtual/Overlays.ts", ['./rollupPluginModLoBabelHelp
           }
           if (this.pausePanel) {
             this.pausePanel.active = false;
+          }
+          if (this.menuPanel) {
+            this.menuPanel.active = false;
           }
         };
         return Overlays;

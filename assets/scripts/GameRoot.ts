@@ -23,7 +23,7 @@ export class GameRoot extends Component {
     /** 道具效果持续时长（秒），Hud 状态栏与效果计时共用 */
     public static readonly EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12 };
 
-    public state: 'playing' | 'paused' | 'levelup' | 'gameover' = 'playing';
+    public state: 'menu' | 'playing' | 'paused' | 'levelup' | 'gameover' = 'menu';
     public stats: Stats = createBaseStats();
     public level = 1;
     public xp = 0;
@@ -102,6 +102,10 @@ export class GameRoot extends Component {
 
         this.ready = true;
         this.restart();
+        // 进入开始界面：点「开始新游戏」或按空格才正式开局
+        this.hud.setHidden(true);
+        this.state = 'menu';
+        this.overlays.showMenu();
     }
 
     /** 星云色块 + 三层视差星空（范围限定在画幅内） */
@@ -215,8 +219,14 @@ export class GameRoot extends Component {
         return n.getComponent(Graphics) || n.addComponent(Graphics);
     }
 
-    /** 键盘：升级选卡用 W/S/空格；其余时候 Esc/空格 切换暂停 */
+    /** 键盘：升级选卡用 W/S/空格；开始界面空格开局；其余时候 Esc/空格 切换暂停 */
     private onKeyDown(e: EventKeyboard) {
+        if (this.state === 'menu') {
+            if (e.keyCode === KeyCode.SPACE || e.keyCode === KeyCode.ENTER) {
+                this.startGame();
+            }
+            return;
+        }
         if (this.state === 'levelup') {
             if (e.keyCode === KeyCode.KEY_W || e.keyCode === KeyCode.ARROW_UP) {
                 this.overlays.moveSel(-1);
@@ -230,6 +240,15 @@ export class GameRoot extends Component {
         if (e.keyCode === KeyCode.ESCAPE || e.keyCode === KeyCode.SPACE) {
             this.togglePause();
         }
+    }
+
+    /** 从开始界面正式开局 */
+    public startGame() {
+        if (this.state !== 'menu') return;
+        this.hud.setHidden(false);
+        this.overlays.hideAll();
+        this.restart();
+        SoundFX.I.pick();
     }
 
     /** 暂停 / 继续游戏（升级选择与结算界面时无效） */
@@ -307,7 +326,7 @@ export class GameRoot extends Component {
             }
         }
 
-        if (this.state === 'gameover' || this.state === 'levelup') return;
+        if (this.state !== 'playing') return;
 
         this.elapsed += dt;
         this.spawnLogic(dt);
