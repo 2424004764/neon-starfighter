@@ -69,12 +69,13 @@ export const UPGRADES: Upgrade[] = [
     },
     {
         id: 'speed',
-        name: '移动速度 +1',
-        desc: '跑得更快，方便躲怪',
+        name: '移动速度 +15%',
+        desc: '移动更灵活，方便走位躲弹',
         char: '速',
         color: hex('#4fc3f7'),
         weight: 10,
-        apply(s) { s.moveSpeed += 1; },
+        canOffer(s) { return s.moveSpeed < 2; },
+        apply(s) { s.moveSpeed += 0.15; },
     },
     {
         id: 'hp',

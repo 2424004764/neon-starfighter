@@ -14,7 +14,7 @@ const PAUSE_STATS: { label: string; get: (s: Stats) => string }[] = [
     { label: '暴击率', get: s => `${Math.round(s.critRate * 100)}%（×${s.critMult}）` },
     { label: '攻击间隔', get: s => `${s.fireInterval.toFixed(2)} 秒` },
     { label: '弹道数量', get: s => `${s.bulletCount} 发` },
-    { label: '移动速度', get: s => `× ${s.moveSpeed.toFixed(1)}` },
+    { label: '移动速度', get: s => `+ ${Math.round((s.moveSpeed - 1) * 100)}%` },
     { label: '经验加成', get: s => `+ ${Math.round((s.xpGain - 1) * 100)}%` },
     { label: '磁场范围', get: s => `${Math.round(s.magnetRange)}` },
     { label: '环绕电球', get: s => s.orbs > 0 ? `${s.orbs} 颗` : '无' },
