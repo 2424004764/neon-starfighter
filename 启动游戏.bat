@@ -1,6 +1,6 @@
 ﻿@echo off
 chcp 65001 >nul
-title 霓虹深空 - Neon Deep Space
+title Neon Starfighter 霓虹星际战机
 echo ============================================
 echo   《霓虹深空》启动中...
 echo ============================================
@@ -24,4 +24,5 @@ echo - 点击页面激活音效
 echo - WASD / 方向键 / 按住拖动 移动
 echo - 关闭本窗口不会影响游戏，但关机后需重新双击本文件
 timeout /t 5 >nul
+
 

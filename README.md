@@ -1,4 +1,4 @@
-# 霓虹深空 · Neon Deep Space
+﻿# Neon Starfighter · 霓虹星际战机
 
 ![Cocos Creator](https://img.shields.io/badge/Cocos%20Creator-3.8.8-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -69,3 +69,4 @@
 ## 📄 License
 
 MIT
+
