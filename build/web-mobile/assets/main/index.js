@@ -2204,11 +2204,10 @@ System.register("chunks:///_virtual/Overlays.ts", ['./rollupPluginModLoBabelHelp
           this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -228, '空格 / Esc  暂停      V  切换战机');
           this.makeLabel(this.menuPanel, 18, new Color(148, 163, 184), 0, -266, '击杀敌机 · 拾取强化 · 活下去');
 
-          // GameRoot.onLoad 早于本 start：按当前状态决定初始显示（开局进开始界面）
+          // 新建节点默认可见：先全部隐藏，再按当前状态显示对应面板
+          this.hideAll();
           if (GameRoot.I.state === 'menu') {
             this.showMenu();
-          } else {
-            this.hideAll();
           }
         };
         _proto.showLevelUp = function showLevelUp(choices) {
