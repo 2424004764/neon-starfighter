@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, Color, Graphics, input, Input, EventTouch, EventKeyboard, KeyCode, UIOpacity, UITransform, tween } from 'cc';
+import { _decorator, Component, Node, Vec3, Color, Graphics, Label, input, Input, EventTouch, EventKeyboard, KeyCode, UIOpacity, UITransform, tween } from 'cc';
 import { GameRoot } from './GameRoot';
 import { SoundFX } from './SoundFX';
 const { ccclass } = _decorator;
@@ -8,16 +8,29 @@ const BULLET_SPEED = 640;
 const ORBIT_RADIUS = 78;
 const ORBIT_SPEED = 2.6;  // 电球旋转角速度（弧度/秒）
 
-/** 玩家：霓虹箭形战机，跟随手指移动，自动射击 */
+const DASH_SPEED = 1500;      // 冲刺瞬移速度
+const DASH_DURATION = 0.13;   // 冲刺位移时长
+public static readonly DASH_CD = 2.6;  // 冲刺冷却（Hud 读取）
+const DASH_INVINC = 0.35;     // 冲刺后无敌帧
+
+/** 玩家：霓虹箭形战机，跟随手指移动，自动射击；空格/Shift 冲刺 */
 @ccclass('Player')
 export class Player extends Component {
     private target: Vec3 | null = null;
     private fireTimer = 0;
     private missileTimer = 0;
+    private laserTimer = 0;
+    private blackholeTimer = 0;
     private invincible = 0;
     private dying = false;
     private animT = 0;
     private keys = new Set<number>();   // 当前按住的键盘按键
+
+    // 冲刺状态
+    public dashCdT = 0;                 // 冷却剩余（Hud 读取显示）
+    private dashT = 0;                  // 位移剩余时长
+    private dashDir = new Vec3(0, 1, 0);
+    private lastDir = new Vec3(0, 1, 0);// 冲刺默认方向 = 最近移动方向
 
     private bodyNode: Node = null!;
     private classicNode: Node = null!;
@@ -25,6 +38,8 @@ export class Player extends Component {
     private flameNode: Node = null!;
     private invincRing: Node = null!;
     private shieldRing: Node = null!;
+    private dashBtn: Node = null!;
+    private dashBtnRing: Graphics = null!;
     public orbNodes: Node[] = [];
     public orbCds: number[] = [];
     private orbAngle = 0;
@@ -38,6 +53,7 @@ export class Player extends Component {
         input.on(Input.EventType.KEY_DOWN, this.onKeyDown, this);
         input.on(Input.EventType.KEY_UP, this.onKeyUp, this);
         this.buildVisual();
+        this.buildDashButton();
     }
 
     onDestroy() {
@@ -58,6 +74,10 @@ export class Player extends Component {
             this.bodyNode.active = this.skinIndex === 0;
             this.classicNode.active = this.skinIndex === 1;
             SoundFX.I.pick();
+        }
+        // 冲刺：Shift（触屏用屏幕按钮）；空格保留给暂停/选卡确认
+        if (e.keyCode === KeyCode.SHIFT_LEFT || e.keyCode === KeyCode.SHIFT_RIGHT) {
+            this.tryDash();
         }
     }
 
@@ -153,11 +173,66 @@ export class Player extends Component {
         this.invincRing.active = false;
     }
 
+    /** 触屏冲刺按钮（右下角圆形，冷却时暗淡并显示冷却进度） */
+    private buildDashButton() {
+        const root = GameRoot.I.node;
+        const half = GameRoot.I.halfSize;
+        this.dashBtn = new Node('DashBtn');
+        this.dashBtn.addComponent(UITransform).setContentSize(100, 100);
+        this.dashBtn.setPosition(half.x - 78, -half.y + 120, 0);
+        root.addChild(this.dashBtn);
+
+        const ring = new Node('ring');
+        this.dashBtn.addChild(ring);
+        this.dashBtnRing = ring.addComponent(Graphics);
+        this.drawDashRing(1);
+
+        const ch = new Node('ch');
+        const ct = ch.addComponent(UITransform);
+        ct.setContentSize(60, 60);
+        const cl = ch.addComponent(Label);
+        cl.string = '冲';
+        cl.fontSize = 30;
+        cl.lineHeight = 34;
+        cl.color = new Color(224, 255, 255);
+        this.dashBtn.addChild(ch);
+
+        this.dashBtn.on(Node.EventType.TOUCH_END, () => { this.tryDash(); });
+        this.dashBtn.active = false;
+    }
+
+    /** 重绘冲刺按钮圆环：frac=1 就绪（亮），冷却时灰色扇形 */
+    private drawDashRing(frac: number) {
+        const g = this.dashBtnRing;
+        g.clear();
+        const ready = frac >= 1;
+        const col = ready ? new Color(103, 232, 249, 230) : new Color(100, 116, 139, 180);
+        g.fillColor = new Color(12, 15, 28, ready ? 190 : 150);
+        g.circle(0, 0, 44);
+        g.fill();
+        g.strokeColor = col;
+        g.lineWidth = 4;
+        g.circle(0, 0, 44);
+        g.stroke();
+        // 冷却进度弧
+        if (!ready && frac > 0) {
+            g.strokeColor = new Color(103, 232, 249, 220);
+            g.lineWidth = 6;
+            const start = Math.PI / 2;
+            g.arc(0, 0, 36, start, start - frac * Math.PI * 2, true);
+            g.stroke();
+        }
+    }
+
     public resetState() {
         this.target = null;
         this.fireTimer = 0;
+        this.laserTimer = 0;
+        this.blackholeTimer = 0;
         this.invincible = 0;
         this.dying = false;
+        this.dashCdT = 0;
+        this.dashT = 0;
         this.node.setPosition(0, -GameRoot.I.halfSize.y + 120, 0);
         this.node.setScale(1, 1, 1);
         const op = this.node.getComponent(UIOpacity);
@@ -169,11 +244,52 @@ export class Player extends Component {
         if (GameRoot.I.state !== 'playing') return;
         const ui = e.getUILocation();
         const half = GameRoot.I.halfSize;
-        this.target = new Vec3(ui.x - half.x, ui.y - half.y, 0);
+        const x = ui.x - half.x;
+        const y = ui.y - half.y;
+        // 冲刺按钮区域的触摸不作为移动目标
+        if (this.dashBtn && this.dashBtn.active) {
+            const bp = this.dashBtn.position;
+            const dx = x - bp.x, dy = y - bp.y;
+            if (dx * dx + dy * dy < 58 * 58) return;
+        }
+        this.target = new Vec3(x, y, 0);
     }
 
     private onTouchEnd() {
         this.target = null;
+    }
+
+    /** 冲刺：向最近移动方向瞬移一段，带无敌帧与残影 */
+    public tryDash(): boolean {
+        const root = GameRoot.I;
+        if (root.state !== 'playing' || this.dying) return false;
+        if (this.dashCdT > 0 || this.dashT > 0) return false;
+        this.dashDir.set(this.lastDir.x, this.lastDir.y, 0);
+        this.dashT = DASH_DURATION;
+        this.dashCdT = root.stats.dashCd;
+        this.invincible = Math.max(this.invincible, DASH_INVINC);
+        root.onDash();
+        SoundFX.I.dash();
+        // 残影：沿冲刺路径撒 4 个渐隐剪影
+        for (let i = 1; i <= 4; i++) {
+            this.scheduleOnce(() => { this.spawnGhost(); }, i * 0.03);
+        }
+        return true;
+    }
+
+    private spawnGhost() {
+        const n = new Node('dash-ghost');
+        n.addComponent(UITransform).setContentSize(56, 56);
+        const g = n.addComponent(Graphics);
+        g.fillColor = new Color(34, 211, 238, 90);
+        g.moveTo(0, -26); g.lineTo(19, 17); g.lineTo(0, 9); g.lineTo(-19, 17); g.close(); g.fill();
+        const p = this.node.getPosition();
+        n.setPosition(p.x, p.y, 0);
+        this.node.parent.addChild(n);
+        const op = n.addComponent(UIOpacity);
+        op.opacity = 150;
+        tween(n).to(0.3, { scale: new Vec3(0.6, 0.6, 1) }).start();
+        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); }).start();
     }
 
     /** 按当前属性同步环绕电球数量 */
@@ -204,28 +320,50 @@ export class Player extends Component {
         const root = GameRoot.I;
         const stats = root.stats;
 
+        // 冲刺按钮显隐与冷却刷新（暂停/选卡时隐藏）
+        if (this.dashBtn) {
+            const show = root.state === 'playing' && !this.dying;
+            if (this.dashBtn.active !== show) { this.dashBtn.active = show; }
+            if (show) {
+                const frac = 1 - Math.max(this.dashCdT, 0) / root.stats.dashCd;
+                this.drawDashRing(frac);
+            }
+        }
+
         if (root.state !== 'playing' || this.dying) return;
         this.animT += dt;
 
-        // 键盘优先，其次触点跟随
-        const axis = this.keyAxis();
-        if (axis.dx !== 0 || axis.dy !== 0) {
+        // 冲刺冷却/位移
+        if (this.dashCdT > 0) { this.dashCdT -= dt; }
+        if (this.dashT > 0) {
+            this.dashT -= dt;
             const p = this.node.getPosition();
-            const len = Math.sqrt(axis.dx * axis.dx + axis.dy * axis.dy);
-            const step = BASE_SPEED * stats.moveSpeed * dt;
-            this.node.setPosition(
-                p.x + axis.dx / len * step,
-                p.y + axis.dy / len * step,
-                0
-            );
-        } else if (this.target) {
-            const p = this.node.getPosition();
-            const dx = this.target.x - p.x;
-            const dy = this.target.y - p.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 4) {
-                const step = Math.min(dist, BASE_SPEED * stats.moveSpeed * dt);
-                this.node.setPosition(p.x + dx / dist * step, p.y + dy / dist * step, 0);
+            this.node.setPosition(p.x + this.dashDir.x * DASH_SPEED * dt, p.y + this.dashDir.y * DASH_SPEED * dt, 0);
+            // 冲刺拖尾
+            if (Math.random() < 0.8) { this.spawnGhost(); }
+        } else {
+            // 键盘优先，其次触点跟随
+            const axis = this.keyAxis();
+            if (axis.dx !== 0 || axis.dy !== 0) {
+                const len = Math.sqrt(axis.dx * axis.dx + axis.dy * axis.dy);
+                this.lastDir.set(axis.dx / len, axis.dy / len, 0);
+                const p = this.node.getPosition();
+                const step = BASE_SPEED * stats.moveSpeed * dt;
+                this.node.setPosition(
+                    p.x + axis.dx / len * step,
+                    p.y + axis.dy / len * step,
+                    0
+                );
+            } else if (this.target) {
+                const p = this.node.getPosition();
+                const dx = this.target.x - p.x;
+                const dy = this.target.y - p.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 4) {
+                    this.lastDir.set(dx / dist, dy / dist, 0);
+                    const step = Math.min(dist, BASE_SPEED * stats.moveSpeed * dt);
+                    this.node.setPosition(p.x + dx / dist * step, p.y + dy / dist * step, 0);
+                }
             }
         }
 
@@ -282,6 +420,24 @@ export class Player extends Component {
         if (this.fireTimer <= 0) {
             this.fireTimer = stats.fireInterval * (root.effectRage > 0 ? 0.5 : 1);
             this.shoot();
+        }
+
+        // 镭射：周期贯穿光束，等级越高越快越宽
+        if (stats.laser > 0) {
+            this.laserTimer -= dt;
+            if (this.laserTimer <= 0) {
+                this.laserTimer = 3.4 - 0.5 * stats.laser;
+                root.fireLaser();
+            }
+        }
+
+        // 黑洞弹：周期在敌群密集处生成黑洞
+        if (stats.blackhole > 0) {
+            this.blackholeTimer -= dt;
+            if (this.blackholeTimer <= 0) {
+                this.blackholeTimer = 8.5 - 1.2 * stats.blackhole;
+                root.spawnBlackhole();
+            }
         }
 
         // 跟踪导弹：每 2.4 秒自动发射一轮

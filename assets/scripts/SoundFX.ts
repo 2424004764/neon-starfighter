@@ -97,4 +97,25 @@ export class SoundFX {
         this.tone(880, 880, 0.07, 'square', 0.12, 0.08);
         this.tone(1174, 1174, 0.12, 'square', 0.12, 0.16);
     }
+    // ---- 新玩法音效 ----
+    /** 自爆蜂引信点燃 */
+    public fuse() { this.tone(1500, 900, 0.12, 'square', 0.06); this.tone(1500, 900, 0.12, 'square', 0.06, 0.16); }
+    /** 冲刺 */
+    public dash() { this.noise(0.14, 0.1, 4200); this.tone(1300, 300, 0.16, 'sine', 0.1); }
+    /** 镭射 */
+    public laser() { this.tone(1500, 180, 0.22, 'sawtooth', 0.12); this.noise(0.12, 0.05, 5000); }
+    /** 闪电链 */
+    public chain() { this.noise(0.08, 0.12, 6000); this.tone(2200, 300, 0.08, 'square', 0.08); }
+    /** 冰冻/冰缓 */
+    public freeze() { this.tone(1800, 500, 0.25, 'sine', 0.1); }
+    /** 金币拾取 */
+    public gold() { this.tone(1300, 1300, 0.05, 'sine', 0.07); this.tone(1750, 1750, 0.08, 'sine', 0.07, 0.05); }
+    /** 成就解锁 */
+    public achieve() {
+        this.tone(784, 784, 0.09, 'triangle', 0.14);
+        this.tone(988, 988, 0.09, 'triangle', 0.14, 0.1);
+        this.tone(1319, 1319, 0.2, 'triangle', 0.14, 0.2);
+    }
+    /** 商店购买 */
+    public buy() { this.tone(600, 900, 0.08, 'square', 0.1); this.tone(900, 1200, 0.1, 'square', 0.1, 0.09); }
 }

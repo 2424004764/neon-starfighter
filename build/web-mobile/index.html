@@ -3,7 +3,41 @@
 <head>
   <meta charset="utf-8">
 
-  <title>Cocos Creator | neon-starfighter</title>
+  
+
+<script>
+// rAF 混合驱动兜底：部分嵌入式 WebView 永不触发 requestAnimationFrame，
+// 导致 Cocos 主循环无法启动。此处同步包装：原生 rAF 优先（正常浏览器行为不变），
+// 20ms 看门狗兜底（异常环境仍能以 ~50fps 运行）。
+(function(){
+  var nativeRAF = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+  var nativeCAF = window.cancelAnimationFrame ? window.cancelAnimationFrame.bind(window) : null;
+  window.__rafNative = false;
+  if (nativeRAF) {
+    nativeRAF(function(){ window.__rafNative = true; });
+  }
+  window.requestAnimationFrame = function(cb){
+    var done = false, tid = 0, nid = 0;
+    if (nativeRAF) {
+      nid = nativeRAF(function(ts){
+        if (done) return; done = true; clearTimeout(tid);
+        cb(ts);
+      });
+    }
+    tid = setTimeout(function(){
+      if (done) return; done = true;
+      if (nid && nativeCAF) { try { nativeCAF(nid); } catch (e) {} }
+      cb(performance.now());
+    }, 20);
+    return nid || tid;
+  };
+})();
+</script>
+
+
+
+
+<title>Cocos Creator | neon-starfighter</title>
 
   <!--http://www.html5rocks.com/en/mobile/mobifying/-->
   <meta name="viewport"
