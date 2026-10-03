@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Color, Graphics, Label, UITransform, tween, UIOpacity, Vec3 } from 'cc';
+import { _decorator, Component, Node, Color, Graphics, Label, UITransform, tween, UIOpacity, Vec3, EventTouch } from 'cc';
 import { GameRoot } from './GameRoot';
 import { Upgrade, Stats } from './Upgrades';
 import * as MetaSave from './MetaSave';
@@ -351,6 +351,7 @@ export class Overlays extends Component {
     private rebuildShop(offers: (Upgrade | null)[], gold: number, wave: number, rerollCost: number) {
         this.shopCardsRoot.destroyAllChildren();
         this.shopGoldLabel.string = `金 ${gold}    ·    第 ${wave} 波结束`;
+        const locks = GameRoot.I.shopLocks;
 
         offers.forEach((up, i) => {
             if (!up) {
@@ -368,9 +369,20 @@ export class Overlays extends Component {
             }
             const price = up.price ?? 25;
             const card = this.makeUpgradeCard(up, () => { GameRoot.I.buyShopOffer(i); });
+            card.name = 'offer' + i;    // 记录槽位下标，供键盘选中反查
             // 右侧价格标签
             const afford = gold >= price;
-            this.makeLabel(card, 24, afford ? new Color(251, 191, 36) : new Color(248, 113, 113), CARD_W / 2 - 70, 0, `◆${price}`);
+            this.makeLabel(card, 24, afford ? new Color(251, 191, 36) : new Color(248, 113, 113), CARD_W / 2 - 70, 10, `◆${price}`);
+            if (locks[i]) {
+                // 锁定卡片：左侧金色书签条
+                const strip = new Node('lockstrip');
+                const lg = strip.addComponent(Graphics);
+                lg.fillColor = new Color(245, 158, 11, 235);
+                lg.roundRect(-CARD_W / 2 + 3, -CARD_H / 2 + 4, 8, CARD_H - 8, 4);
+                lg.fill();
+                card.addChild(strip);
+            }
+            this.makeLockBtn(card, i, !!locks[i]);
             card.setPosition(0, 300 - i * (CARD_H + 18), 0);
             this.shopCardsRoot.addChild(card);
         });
@@ -380,11 +392,32 @@ export class Overlays extends Component {
         reroll.name = 'reroll';
         const next = this.makeBtn(this.shopCardsRoot, 400, 84, '#66bb6a', '#0a2412', `开始第 ${wave + 1} 波  ⏎`, 30, 0, -328, () => { GameRoot.I.nextWave(); });
         next.name = 'next';
-        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格购买 · 回车下一波');
+        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格购买 · L 锁定 · 回车下一波');
 
         // 键盘选中态
         this.shopSel = 0;
         this.highlightShop();
+    }
+
+    /** 卡片右下角锁定按钮：锁定后该道具刷新与下一波都原位保留 */
+    private makeLockBtn(card: Node, offerIndex: number, locked: boolean) {
+        const btn = new Node('lockbtn');
+        btn.addComponent(UITransform).setContentSize(132, 34);
+        const g = btn.addComponent(Graphics);
+        g.fillColor = locked ? new Color(180, 83, 9) : new Color(30, 41, 59);
+        g.roundRect(-66, -17, 132, 34, 10);
+        g.fill();
+        g.strokeColor = locked ? new Color(245, 158, 11) : new Color(71, 85, 105);
+        g.lineWidth = 2;
+        g.roundRect(-66, -17, 132, 34, 10);
+        g.stroke();
+        this.makeLabel(btn, 17, locked ? new Color(255, 247, 237) : new Color(148, 163, 184), 0, 0, locked ? '已锁定' : '锁定');
+        btn.setPosition(CARD_W / 2 - 76, -30, 0);
+        btn.on(Node.EventType.TOUCH_END, (e: EventTouch) => {
+            e.propagationStopped = true;    // 阻止冒泡触发卡片购买
+            GameRoot.I.toggleShopLock(offerIndex);
+        });
+        card.addChild(btn);
     }
 
     private shopSel = 0;
@@ -414,9 +447,25 @@ export class Overlays extends Component {
         this.highlightShop();
     }
 
+    /** 键盘当前选中卡片对应的商店槽位下标（卡片 name 为 offer{i}，售罄占位无卡片会被跳过） */
+    private selectedOfferIndex(): number {
+        const cardNodes = this.shopCardsRoot.children.filter(n => n.getChildByName('hl'));
+        const n = cardNodes[this.shopSel];
+        const m = n && /^offer(\d+)$/.exec(n.name);
+        return m ? parseInt(m[1], 10) : -1;
+    }
+
     public confirmShopSel() {
         if (!this.shopPanel.active) return;
-        GameRoot.I.buyShopOffer(this.shopSel);
+        const idx = this.selectedOfferIndex();
+        if (idx >= 0) { GameRoot.I.buyShopOffer(idx); }
+    }
+
+    /** 键盘 L 键：锁定/解锁当前选中槽位 */
+    public toggleShopSelLock() {
+        if (!this.shopPanel.active) return;
+        const idx = this.selectedOfferIndex();
+        if (idx >= 0) { GameRoot.I.toggleShopLock(idx); }
     }
 
     // ---------------- 机库强化 ----------------

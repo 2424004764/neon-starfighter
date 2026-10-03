@@ -13,15 +13,19 @@ export class Bullet extends Component {
     public damage = 1;
     public hostile = false;
     private styled: 'player' | 'enemy' | null = null;   // 当前已绘制样式
+    /** 穿透记录：非空表示可穿透，已命中的敌机存入集合防止反复判定 */
+    public hits: Set<any> | null = null;
 
     /**
      * @param angle 发射角度（弧度），0 表示正上方
+     * @param pierce 可额外穿透的敌机数（0 = 命中即毁）
      */
-    public init(angle: number, speed: number, damage: number, hostile = false) {
+    public init(angle: number, speed: number, damage: number, hostile = false, pierce = 0) {
         this.vx = Math.sin(angle) * speed;
         this.vy = Math.cos(angle) * speed;
         this.damage = damage;
         this.hostile = hostile;
+        this.hits = pierce > 0 ? new Set() : null;
         this.node.active = true;
         this.setStyle(hostile ? 'enemy' : 'player');
     }

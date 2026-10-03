@@ -33,15 +33,19 @@ let Bullet = class Bullet extends Component {
         this.damage = 1;
         this.hostile = false;
         this.styled = null; // 当前已绘制样式
+        /** 穿透记录：非空表示可穿透，已命中的敌机存入集合防止反复判定 */
+        this.hits = null;
     }
     /**
      * @param angle 发射角度（弧度），0 表示正上方
+     * @param pierce 可额外穿透的敌机数（0 = 命中即毁）
      */
-    init(angle, speed, damage, hostile = false) {
+    init(angle, speed, damage, hostile = false, pierce = 0) {
         this.vx = Math.sin(angle) * speed;
         this.vy = Math.cos(angle) * speed;
         this.damage = damage;
         this.hostile = hostile;
+        this.hits = pierce > 0 ? new Set() : null;
         this.node.active = true;
         this.setStyle(hostile ? 'enemy' : 'player');
     }
@@ -947,6 +951,8 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.waveTime = 0;
         this.shopRerolls = 0;
         this.shopOffers = [];
+        /** 商店槽位锁定：锁定槽的道具在刷新与下一波商店中原位保留 */
+        this.shopLocks = [false, false, false, false];
         /** 结算数据核心与每日纪录（gameover 面板读取） */
         this.lastCoresEarned = 0;
         this.lastDailyRecord = false;
@@ -961,6 +967,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.runDashes = 0;
         this.runGoldPicked = 0;
         this.runEliteKills = 0;
+        this.vampCounter = 0; // 纳米修复击杀计数
         // 道具效果（剩余秒数，0 表示无）
         this.effectMagnet = 0;
         this.effectRage = 0;
@@ -1000,7 +1007,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
         // 窗口/面板尺寸变化时重新适配画幅（嵌入式浏览器拖拽分栏后画布不会自动重投影）
         window.addEventListener('resize', () => {
-            view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
+            if (window.innerWidth > 0 && window.innerHeight > 0) {
+                view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
+            }
         });
         // 音效上下文（首次触摸后激活）
         SoundFX.I.init();
@@ -1163,6 +1172,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
             else if (e.keyCode === KeyCode.SPACE) {
                 this.overlays.confirmShopSel();
             }
+            else if (e.keyCode === KeyCode.KEY_L) {
+                this.overlays.toggleShopSelLock();
+            }
             else if (e.keyCode === KeyCode.ENTER || e.keyCode === KeyCode.KEY_N || e.keyCode === KeyCode.KEY_R) {
                 this.nextWave();
             }
@@ -1215,7 +1227,8 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         if (!this.ready)
             return;
         const uiT = this.node.getComponent(UITransform);
-        if (uiT) {
+        if (uiT && uiT.width > 0 && uiT.height > 0) {
+            // 嵌入式浏览器面板折叠时画幅会瞬间归零，保持上一帧有效尺寸防坐标崩坏
             this.halfSize.set(uiT.width / 2, uiT.height / 2, 0);
         }
         // 暂停时整个世界冻结
@@ -1545,6 +1558,18 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
     onEnemyKilled(e) {
         this.kills += 1;
         MetaSave.addTotalKills(1);
+        // 纳米修复：击杀攒满回复生命（等级越高所需击杀越少）
+        if (this.stats.vampKills > 0) {
+            this.vampCounter += 1;
+            if (this.vampCounter >= 44 - this.stats.vampKills * 8) {
+                this.vampCounter = 0;
+                if (this.stats.hp < this.stats.maxHp) {
+                    this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + 1);
+                    const pp = this.playerNode.getPosition();
+                    this.spawnFloatText(pp.x, pp.y + 40, '+1', new Color(134, 239, 172), 18);
+                }
+            }
+        }
         this.tryUnlock('firstBlood');
         if (this.kills >= 100) {
             this.tryUnlock('slayer');
@@ -1612,8 +1637,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
     dealDamage(e, baseDamage) {
         if (e.dead)
             return;
+        const scaled = baseDamage * this.stats.dmgMul; // 过载核心：全伤害倍率
         const isCrit = Math.random() < this.stats.critRate;
-        const dmg = isCrit ? Math.round(baseDamage * this.stats.critMult) : baseDamage;
+        const dmg = Math.max(1, Math.round(isCrit ? scaled * this.stats.critMult : scaled));
         const ep = e.node.getPosition();
         if (isCrit) {
             this.spawnFloatText(ep.x + (Math.random() * 30 - 15), ep.y + 20, `${dmg}`, new Color(255, 200, 60), 30);
@@ -1624,7 +1650,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         e.hurt(dmg);
         // 闪电链：暴击时概率向附近敌人跳跃
         if (isCrit && this.stats.chain > 0 && this.rand() < 0.5) {
-            this.chainLightning(e, baseDamage);
+            this.chainLightning(e, scaled);
         }
     }
     /** 闪电链：从暴击目标起跳，最多 3 跳，伤害逐跳衰减 */
@@ -2157,23 +2183,40 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
                 continue;
             }
             const bp = b.node.getPosition();
+            let consumed = false;
             for (const e of this.enemys) {
                 if (e.dead)
                     continue;
+                if (b.hits && b.hits.has(e))
+                    continue; // 穿透中已命中过的敌机不再判定
                 const ep = e.node.getPosition();
                 const r = 30 * e.node.scale.x + 8;
                 const dx = bp.x - ep.x;
                 const dy = bp.y - ep.y;
                 if (dx * dx + dy * dy < r * r) {
-                    const dmg = b.damage;
-                    this.recycleBullet(b);
-                    this.dealDamage(e, dmg);
+                    this.dealDamage(e, b.damage);
                     // 冰冻弹：命中附带减速
                     if (!e.dead && this.stats.freeze > 0) {
                         e.applySlow(0.7 - 0.12 * (this.stats.freeze - 1), 1.4);
                     }
-                    break;
+                    if (b.hits) {
+                        b.hits.add(e);
+                        if (b.hits.size > this.stats.pierce) {
+                            this.recycleBullet(b); // 穿透额度用尽
+                            consumed = true;
+                            break;
+                        }
+                        // 仍有穿透额度：子弹继续飞行并检查后续敌机
+                    }
+                    else {
+                        this.recycleBullet(b);
+                        consumed = true;
+                        break;
+                    }
                 }
+            }
+            if (consumed) {
+                continue;
             }
         }
         // 环绕电球撞击
@@ -2282,7 +2325,14 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         SoundFX.I.levelup();
     }
     refreshShop() {
-        this.shopOffers = rollUpgrades(this.stats, 4);
+        // 锁定槽位保留原道具与位置，其余槽位重摇（且不与锁定道具重复）
+        const keep = [0, 1, 2, 3].map(i => {
+            const up = this.shopOffers[i];
+            return (up && this.shopLocks[i]) ? up : null;
+        });
+        const exclude = keep.filter(u => !!u);
+        const fresh = rollUpgrades(this.stats, 4, exclude);
+        this.shopOffers = keep.map(up => up !== null ? up : (fresh.shift() || null));
         this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
     }
     rerollCost() { return 8 + this.shopRerolls * 4; }
@@ -2302,9 +2352,20 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.gold -= price;
         up.apply(this.stats);
         this.shopOffers[index] = null;
+        this.shopLocks[index] = false;
         this.overlays.updateShop(this.shopOffers, this.gold);
         SoundFX.I.buy();
         return true;
+    }
+    /** 商店锁定/解锁槽位：锁定道具在刷新与下一波原位保留，购买后自动解锁 */
+    toggleShopLock(index) {
+        if (this.state !== 'shop')
+            return;
+        if (!this.shopOffers[index])
+            return;
+        this.shopLocks[index] = !this.shopLocks[index];
+        this.overlays.updateShop(this.shopOffers, this.gold);
+        SoundFX.I.pick();
     }
     /** 商店刷新货架 */
     rerollShop() {
@@ -2430,6 +2491,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.runDashes = 0;
         this.runGoldPicked = 0;
         this.runEliteKills = 0;
+        this.vampCounter = 0;
+        this.shopOffers = [];
+        this.shopLocks = [false, false, false, false];
         if (this.mode === 'waves') {
             this.wave = 1;
             this.waveTime = Math.min(24 + this.wave * 2, 40);
@@ -2796,7 +2860,7 @@ let Hud = Hud_1 = class Hud extends Component {
         if (root.stats.shieldMax > 0) {
             // 护盾：就绪时常亮满条；破碎后显示充能进度
             const ready = root.stats.shield >= 1;
-            const frac = ready ? 1 : Math.min(Math.max(1 - root.stats.shieldTimer / GameRoot.EFFECT_DURATION.shieldRecharge, 0), 1);
+            const frac = ready ? 1 : Math.min(Math.max(1 - root.stats.shieldTimer / root.stats.shieldCd, 0), 1);
             wanted.push({ key: 'shield', frac });
         }
         // 冲刺冷却：就绪满条，冷却时显示充能进度
@@ -3388,6 +3452,7 @@ let Overlays = Overlays_1 = class Overlays extends Component {
     rebuildShop(offers, gold, wave, rerollCost) {
         this.shopCardsRoot.destroyAllChildren();
         this.shopGoldLabel.string = `金 ${gold}    ·    第 ${wave} 波结束`;
+        const locks = GameRoot.I.shopLocks;
         offers.forEach((up, i) => {
             var _a;
             if (!up) {
@@ -3405,9 +3470,20 @@ let Overlays = Overlays_1 = class Overlays extends Component {
             }
             const price = (_a = up.price) !== null && _a !== void 0 ? _a : 25;
             const card = this.makeUpgradeCard(up, () => { GameRoot.I.buyShopOffer(i); });
+            card.name = 'offer' + i; // 记录槽位下标，供键盘选中反查
             // 右侧价格标签
             const afford = gold >= price;
-            this.makeLabel(card, 24, afford ? new Color(251, 191, 36) : new Color(248, 113, 113), CARD_W / 2 - 70, 0, `◆${price}`);
+            this.makeLabel(card, 24, afford ? new Color(251, 191, 36) : new Color(248, 113, 113), CARD_W / 2 - 70, 10, `◆${price}`);
+            if (locks[i]) {
+                // 锁定卡片：左侧金色书签条
+                const strip = new Node('lockstrip');
+                const lg = strip.addComponent(Graphics);
+                lg.fillColor = new Color(245, 158, 11, 235);
+                lg.roundRect(-CARD_W / 2 + 3, -CARD_H / 2 + 4, 8, CARD_H - 8, 4);
+                lg.fill();
+                card.addChild(strip);
+            }
+            this.makeLockBtn(card, i, !!locks[i]);
             card.setPosition(0, 300 - i * (CARD_H + 18), 0);
             this.shopCardsRoot.addChild(card);
         });
@@ -3416,10 +3492,30 @@ let Overlays = Overlays_1 = class Overlays extends Component {
         reroll.name = 'reroll';
         const next = this.makeBtn(this.shopCardsRoot, 400, 84, '#66bb6a', '#0a2412', `开始第 ${wave + 1} 波  ⏎`, 30, 0, -328, () => { GameRoot.I.nextWave(); });
         next.name = 'next';
-        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格购买 · 回车下一波');
+        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格购买 · L 锁定 · 回车下一波');
         // 键盘选中态
         this.shopSel = 0;
         this.highlightShop();
+    }
+    /** 卡片右下角锁定按钮：锁定后该道具刷新与下一波都原位保留 */
+    makeLockBtn(card, offerIndex, locked) {
+        const btn = new Node('lockbtn');
+        btn.addComponent(UITransform).setContentSize(132, 34);
+        const g = btn.addComponent(Graphics);
+        g.fillColor = locked ? new Color(180, 83, 9) : new Color(30, 41, 59);
+        g.roundRect(-66, -17, 132, 34, 10);
+        g.fill();
+        g.strokeColor = locked ? new Color(245, 158, 11) : new Color(71, 85, 105);
+        g.lineWidth = 2;
+        g.roundRect(-66, -17, 132, 34, 10);
+        g.stroke();
+        this.makeLabel(btn, 17, locked ? new Color(255, 247, 237) : new Color(148, 163, 184), 0, 0, locked ? '已锁定' : '锁定');
+        btn.setPosition(CARD_W / 2 - 76, -30, 0);
+        btn.on(Node.EventType.TOUCH_END, (e) => {
+            e.propagationStopped = true; // 阻止冒泡触发卡片购买
+            GameRoot.I.toggleShopLock(offerIndex);
+        });
+        card.addChild(btn);
     }
     highlightShop() {
         // 卡片节点（带高亮框子节点的即卡片；按钮/文本无 hl 子节点自动跳过）
@@ -3450,10 +3546,29 @@ let Overlays = Overlays_1 = class Overlays extends Component {
         SoundFX.I.pick();
         this.highlightShop();
     }
+    /** 键盘当前选中卡片对应的商店槽位下标（卡片 name 为 offer{i}，售罄占位无卡片会被跳过） */
+    selectedOfferIndex() {
+        const cardNodes = this.shopCardsRoot.children.filter(n => n.getChildByName('hl'));
+        const n = cardNodes[this.shopSel];
+        const m = n && /^offer(\d+)$/.exec(n.name);
+        return m ? parseInt(m[1], 10) : -1;
+    }
     confirmShopSel() {
         if (!this.shopPanel.active)
             return;
-        GameRoot.I.buyShopOffer(this.shopSel);
+        const idx = this.selectedOfferIndex();
+        if (idx >= 0) {
+            GameRoot.I.buyShopOffer(idx);
+        }
+    }
+    /** 键盘 L 键：锁定/解锁当前选中槽位 */
+    toggleShopSelLock() {
+        if (!this.shopPanel.active)
+            return;
+        const idx = this.selectedOfferIndex();
+        if (idx >= 0) {
+            GameRoot.I.toggleShopLock(idx);
+        }
     }
     // ---------------- 机库强化 ----------------
     buildMetaPanel() {
@@ -4424,7 +4539,7 @@ let Player = class Player extends Component {
             const angle = (i - (count - 1) / 2) * 0.18;
             const bullet = root.getBullet();
             bullet.node.setPosition(p.x, p.y + 40, 0);
-            bullet.init(angle, BULLET_SPEED, root.stats.damage);
+            bullet.init(angle, BULLET_SPEED * root.stats.bulletSpeed, root.stats.damage, false, root.stats.pierce);
         }
         SoundFX.I.shoot();
     }
@@ -4439,13 +4554,13 @@ let Player = class Player extends Component {
         const stats = root.stats;
         if (stats.shieldMax > 0 && stats.shield >= 1) {
             stats.shield = 0;
-            stats.shieldTimer = GameRoot.EFFECT_DURATION.shieldRecharge;
+            stats.shieldTimer = stats.shieldCd;
             this.invincible = 0.6;
             SoundFX.I.shieldBreak();
             return false;
         }
         stats.hp -= dmg;
-        this.invincible = 1.0;
+        this.invincible = 1.0 + stats.iframeBonus; // 相位装甲延长受击无敌
         SoundFX.I.hurt();
         if (stats.hp <= 0) {
             stats.hp = 0;
@@ -4787,6 +4902,12 @@ function createBaseStats() {
         blackhole: 0,
         freeze: 0,
         dashCd: Math.max(1.5, 2.6 - 0.3 * meta.dash),
+        dmgMul: 1,
+        pierce: 0,
+        vampKills: 0,
+        iframeBonus: 0,
+        shieldCd: 12,
+        bulletSpeed: 1,
     };
 }
 function hex(c) {
@@ -4973,14 +5094,104 @@ const UPGRADES = [
         canOffer(s) { return s.freeze < 5; },
         apply(s) { s.freeze += 1; },
     },
+    {
+        id: 'critDmg',
+        name: '致命一击',
+        desc: '暴击伤害 +30%',
+        char: '致',
+        color: hex('#ffd54f'),
+        weight: 7,
+        price: 30,
+        canOffer(s) { return s.critMult < 3.5; },
+        apply(s) { s.critMult += 0.3; },
+    },
+    {
+        id: 'dmgMul',
+        name: '过载核心',
+        desc: '全部伤害来源 +10%',
+        char: '核',
+        color: hex('#f4511e'),
+        weight: 8,
+        price: 45,
+        canOffer(s) { return s.dmgMul < 1.5; },
+        apply(s) { s.dmgMul += 0.1; },
+    },
+    {
+        id: 'pierce',
+        name: '贯穿弹头',
+        desc: '子弹可额外穿透 1 个敌机',
+        char: '穿',
+        color: hex('#64ffda'),
+        weight: 6,
+        price: 45,
+        canOffer(s) { return s.pierce < 3; },
+        apply(s) { s.pierce += 1; },
+    },
+    {
+        id: 'vamp',
+        name: '纳米修复',
+        desc: '击杀攒满能量回复 1 生命，等级越高越快',
+        char: '生',
+        color: hex('#69f0ae'),
+        weight: 6,
+        price: 35,
+        canOffer(s) { return s.vampKills < 3; },
+        apply(s) { s.vampKills += 1; },
+    },
+    {
+        id: 'iframe',
+        name: '相位装甲',
+        desc: '受击后无敌时间 +0.4 秒',
+        char: '相',
+        color: hex('#eceff1'),
+        weight: 6,
+        price: 30,
+        canOffer(s) { return s.iframeBonus < 1.2; },
+        apply(s) { s.iframeBonus += 0.4; },
+    },
+    {
+        id: 'shieldCd',
+        name: '护盾电容',
+        desc: '护盾充能时间 -2.5 秒',
+        char: '容',
+        color: hex('#90a4ae'),
+        weight: 5,
+        price: 30,
+        canOffer(s) { return s.shieldMax > 0 && s.shieldCd > 4.6; },
+        apply(s) { s.shieldCd = Math.max(4.5, s.shieldCd - 2.5); },
+    },
+    {
+        id: 'dashCd',
+        name: '推进器强化',
+        desc: '冲刺冷却 -0.4 秒',
+        char: '推',
+        color: hex('#00e5ff'),
+        weight: 6,
+        price: 25,
+        canOffer(s) { return s.dashCd > 1.21; },
+        apply(s) { s.dashCd = Math.max(1.2, s.dashCd - 0.4); },
+    },
+    {
+        id: 'bulletSpeed',
+        name: '弹道加速',
+        desc: '子弹飞行速度 +20%',
+        char: '疾',
+        color: hex('#fff176'),
+        weight: 7,
+        price: 20,
+        canOffer(s) { return s.bulletSpeed < 1.6; },
+        apply(s) { s.bulletSpeed += 0.2; },
+    },
 ];
 /** 每日挑战用可播种随机；默认 Math.random */
 let rng = Math.random;
 function setRng(fn) { rng = fn; }
 function resetRng() { rng = Math.random; }
-/** 加权随机抽出 count 个不重复的升级选项（过滤未解锁与已满级） */
-function rollUpgrades(stats, count = 3) {
-    const available = UPGRADES.filter(u => (!u.canOffer || u.canOffer(stats)) &&
+/** 加权随机抽出 count 个不重复的升级选项（过滤未解锁与已满级，可排除指定项） */
+function rollUpgrades(stats, count = 3, exclude = []) {
+    const skip = new Set(exclude.map(u => u.id));
+    const available = UPGRADES.filter(u => !skip.has(u.id) &&
+        (!u.canOffer || u.canOffer(stats)) &&
         (!u.req || MetaSave.hasAchievement(u.req)));
     const picked = [];
     const bag = available.slice();

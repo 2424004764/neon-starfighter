@@ -23,6 +23,12 @@ export interface Stats {
     blackhole: number;      // 黑洞弹等级：周期生成吸聚黑洞
     freeze: number;         // 冰冻弹等级：子弹附带减速
     dashCd: number;         // 冲刺冷却（秒），机库推进器可缩短
+    dmgMul: number;         // 全伤害倍率（作用于所有伤害来源）
+    pierce: number;         // 子弹可额外穿透的敌机数
+    vampKills: number;      // 纳米修复等级：击杀攒满回复生命
+    iframeBonus: number;    // 受击后额外无敌时间（秒）
+    shieldCd: number;       // 护盾充能时长（秒）
+    bulletSpeed: number;    // 子弹飞行速度倍率
 }
 
 export function createBaseStats(): Stats {
@@ -60,6 +66,12 @@ export function createBaseStats(): Stats {
         blackhole: 0,
         freeze: 0,
         dashCd: Math.max(1.5, 2.6 - 0.3 * meta.dash),
+        dmgMul: 1,
+        pierce: 0,
+        vampKills: 0,
+        iframeBonus: 0,
+        shieldCd: 12,
+        bulletSpeed: 1,
     };
 }
 
@@ -262,6 +274,94 @@ export const UPGRADES: Upgrade[] = [
         canOffer(s) { return s.freeze < 5; },
         apply(s) { s.freeze += 1; },
     },
+    {
+        id: 'critDmg',
+        name: '致命一击',
+        desc: '暴击伤害 +30%',
+        char: '致',
+        color: hex('#ffd54f'),
+        weight: 7,
+        price: 30,
+        canOffer(s) { return s.critMult < 3.5; },
+        apply(s) { s.critMult += 0.3; },
+    },
+    {
+        id: 'dmgMul',
+        name: '过载核心',
+        desc: '全部伤害来源 +10%',
+        char: '核',
+        color: hex('#f4511e'),
+        weight: 8,
+        price: 45,
+        canOffer(s) { return s.dmgMul < 1.5; },
+        apply(s) { s.dmgMul += 0.1; },
+    },
+    {
+        id: 'pierce',
+        name: '贯穿弹头',
+        desc: '子弹可额外穿透 1 个敌机',
+        char: '穿',
+        color: hex('#64ffda'),
+        weight: 6,
+        price: 45,
+        canOffer(s) { return s.pierce < 3; },
+        apply(s) { s.pierce += 1; },
+    },
+    {
+        id: 'vamp',
+        name: '纳米修复',
+        desc: '击杀攒满能量回复 1 生命，等级越高越快',
+        char: '生',
+        color: hex('#69f0ae'),
+        weight: 6,
+        price: 35,
+        canOffer(s) { return s.vampKills < 3; },
+        apply(s) { s.vampKills += 1; },
+    },
+    {
+        id: 'iframe',
+        name: '相位装甲',
+        desc: '受击后无敌时间 +0.4 秒',
+        char: '相',
+        color: hex('#eceff1'),
+        weight: 6,
+        price: 30,
+        canOffer(s) { return s.iframeBonus < 1.2; },
+        apply(s) { s.iframeBonus += 0.4; },
+    },
+    {
+        id: 'shieldCd',
+        name: '护盾电容',
+        desc: '护盾充能时间 -2.5 秒',
+        char: '容',
+        color: hex('#90a4ae'),
+        weight: 5,
+        price: 30,
+        canOffer(s) { return s.shieldMax > 0 && s.shieldCd > 4.6; },
+        apply(s) { s.shieldCd = Math.max(4.5, s.shieldCd - 2.5); },
+    },
+    {
+        id: 'dashCd',
+        name: '推进器强化',
+        desc: '冲刺冷却 -0.4 秒',
+        char: '推',
+        color: hex('#00e5ff'),
+        weight: 6,
+        price: 25,
+        canOffer(s) { return s.dashCd > 1.21; },
+        apply(s) { s.dashCd = Math.max(1.2, s.dashCd - 0.4); },
+    },
+    {
+        id: 'bulletSpeed',
+        name: '弹道加速',
+        desc: '子弹飞行速度 +20%',
+        char: '疾',
+        color: hex('#fff176'),
+        weight: 7,
+        price: 20,
+        canOffer(s) { return s.bulletSpeed < 1.6; },
+        apply(s) { s.bulletSpeed += 0.2; },
+    },
 ];
 
 /** 每日挑战用可播种随机；默认 Math.random */
@@ -269,9 +369,11 @@ let rng: () => number = Math.random;
 export function setRng(fn: () => number) { rng = fn; }
 export function resetRng() { rng = Math.random; }
 
-/** 加权随机抽出 count 个不重复的升级选项（过滤未解锁与已满级） */
-export function rollUpgrades(stats: Stats, count = 3): Upgrade[] {
+/** 加权随机抽出 count 个不重复的升级选项（过滤未解锁与已满级，可排除指定项） */
+export function rollUpgrades(stats: Stats, count = 3, exclude: Upgrade[] = []): Upgrade[] {
+    const skip = new Set(exclude.map(u => u.id));
     const available = UPGRADES.filter(u =>
+        !skip.has(u.id) &&
         (!u.canOffer || u.canOffer(stats)) &&
         (!u.req || MetaSave.hasAchievement(u.req))
     );

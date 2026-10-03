@@ -195,7 +195,7 @@ export class Hud extends Component {
         if (root.stats.shieldMax > 0) {
             // 护盾：就绪时常亮满条；破碎后显示充能进度
             const ready = root.stats.shield >= 1;
-            const frac = ready ? 1 : Math.min(Math.max(1 - root.stats.shieldTimer / GameRoot.EFFECT_DURATION.shieldRecharge, 0), 1);
+            const frac = ready ? 1 : Math.min(Math.max(1 - root.stats.shieldTimer / root.stats.shieldCd, 0), 1);
             wanted.push({ key: 'shield', frac });
         }
         // 冲刺冷却：就绪满条，冷却时显示充能进度

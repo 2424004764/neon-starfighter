@@ -46,7 +46,9 @@ export class GameRoot extends Component {
     public wave = 0;
     public waveTime = 0;
     public shopRerolls = 0;
-    public shopOffers: Upgrade[] = [];
+    public shopOffers: (Upgrade | null)[] = [];
+    /** 商店槽位锁定：锁定槽的道具在刷新与下一波商店中原位保留 */
+    public shopLocks: boolean[] = [false, false, false, false];
 
     /** 结算数据核心与每日纪录（gameover 面板读取） */
     public lastCoresEarned = 0;
@@ -64,6 +66,7 @@ export class GameRoot extends Component {
     public runDashes = 0;
     public runGoldPicked = 0;
     public runEliteKills = 0;
+    private vampCounter = 0;    // 纳米修复击杀计数
 
     // 道具效果（剩余秒数，0 表示无）
     public effectMagnet = 0;
@@ -109,7 +112,9 @@ export class GameRoot extends Component {
 
         // 窗口/面板尺寸变化时重新适配画幅（嵌入式浏览器拖拽分栏后画布不会自动重投影）
         window.addEventListener('resize', () => {
-            view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
+            if (window.innerWidth > 0 && window.innerHeight > 0) {
+                view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
+            }
         });
 
         // 音效上下文（首次触摸后激活）
@@ -280,6 +285,8 @@ export class GameRoot extends Component {
                 this.overlays.moveShopSel(1);
             } else if (e.keyCode === KeyCode.SPACE) {
                 this.overlays.confirmShopSel();
+            } else if (e.keyCode === KeyCode.KEY_L) {
+                this.overlays.toggleShopSelLock();
             } else if (e.keyCode === KeyCode.ENTER || e.keyCode === KeyCode.KEY_N || e.keyCode === KeyCode.KEY_R) {
                 this.nextWave();
             }
@@ -333,7 +340,8 @@ export class GameRoot extends Component {
         if (!this.ready) return;
 
         const uiT = this.node.getComponent(UITransform);
-        if (uiT) {
+        if (uiT && uiT.width > 0 && uiT.height > 0) {
+            // 嵌入式浏览器面板折叠时画幅会瞬间归零，保持上一帧有效尺寸防坐标崩坏
             this.halfSize.set(uiT.width / 2, uiT.height / 2, 0);
         }
 
@@ -655,6 +663,20 @@ export class GameRoot extends Component {
     public onEnemyKilled(e: Enemy) {
         this.kills += 1;
         MetaSave.addTotalKills(1);
+
+        // 纳米修复：击杀攒满回复生命（等级越高所需击杀越少）
+        if (this.stats.vampKills > 0) {
+            this.vampCounter += 1;
+            if (this.vampCounter >= 44 - this.stats.vampKills * 8) {
+                this.vampCounter = 0;
+                if (this.stats.hp < this.stats.maxHp) {
+                    this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + 1);
+                    const pp = this.playerNode.getPosition();
+                    this.spawnFloatText(pp.x, pp.y + 40, '+1', new Color(134, 239, 172), 18);
+                }
+            }
+        }
+
         this.tryUnlock('firstBlood');
         if (this.kills >= 100) { this.tryUnlock('slayer'); }
         if (e.isBoss) {
@@ -712,8 +734,9 @@ export class GameRoot extends Component {
      */
     public dealDamage(e: Enemy, baseDamage: number) {
         if (e.dead) return;
+        const scaled = baseDamage * this.stats.dmgMul;   // 过载核心：全伤害倍率
         const isCrit = Math.random() < this.stats.critRate;
-        const dmg = isCrit ? Math.round(baseDamage * this.stats.critMult) : baseDamage;
+        const dmg = Math.max(1, Math.round(isCrit ? scaled * this.stats.critMult : scaled));
         const ep = e.node.getPosition();
         if (isCrit) {
             this.spawnFloatText(ep.x + (Math.random() * 30 - 15), ep.y + 20, `${dmg}`, new Color(255, 200, 60), 30);
@@ -723,7 +746,7 @@ export class GameRoot extends Component {
         e.hurt(dmg);
         // 闪电链：暴击时概率向附近敌人跳跃
         if (isCrit && this.stats.chain > 0 && this.rand() < 0.5) {
-            this.chainLightning(e, baseDamage);
+            this.chainLightning(e, scaled);
         }
     }
 
@@ -1235,23 +1258,36 @@ export class GameRoot extends Component {
             const b = this.bullets[i];
             if (b.hostile) { continue; }
             const bp = b.node.getPosition();
+            let consumed = false;
             for (const e of this.enemys) {
                 if (e.dead) continue;
+                if (b.hits && b.hits.has(e)) continue;   // 穿透中已命中过的敌机不再判定
                 const ep = e.node.getPosition();
                 const r = 30 * e.node.scale.x + 8;
                 const dx = bp.x - ep.x;
                 const dy = bp.y - ep.y;
                 if (dx * dx + dy * dy < r * r) {
-                    const dmg = b.damage;
-                    this.recycleBullet(b);
-                    this.dealDamage(e, dmg);
+                    this.dealDamage(e, b.damage);
                     // 冰冻弹：命中附带减速
                     if (!e.dead && this.stats.freeze > 0) {
                         e.applySlow(0.7 - 0.12 * (this.stats.freeze - 1), 1.4);
                     }
-                    break;
+                    if (b.hits) {
+                        b.hits.add(e);
+                        if (b.hits.size > this.stats.pierce) {
+                            this.recycleBullet(b);   // 穿透额度用尽
+                            consumed = true;
+                            break;
+                        }
+                        // 仍有穿透额度：子弹继续飞行并检查后续敌机
+                    } else {
+                        this.recycleBullet(b);
+                        consumed = true;
+                        break;
+                    }
                 }
             }
+            if (consumed) { continue; }
         }
 
         // 环绕电球撞击
@@ -1354,7 +1390,14 @@ export class GameRoot extends Component {
     }
 
     private refreshShop() {
-        this.shopOffers = rollUpgrades(this.stats, 4);
+        // 锁定槽位保留原道具与位置，其余槽位重摇（且不与锁定道具重复）
+        const keep: (Upgrade | null)[] = [0, 1, 2, 3].map(i => {
+            const up = this.shopOffers[i];
+            return (up && this.shopLocks[i]) ? up : null;
+        });
+        const exclude = keep.filter((u): u is Upgrade => !!u);
+        const fresh = rollUpgrades(this.stats, 4, exclude);
+        this.shopOffers = keep.map(up => up !== null ? up : (fresh.shift() ?? null));
         this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
     }
 
@@ -1369,10 +1412,20 @@ export class GameRoot extends Component {
         if (this.gold < price) { SoundFX.I.hurt(); return false; }
         this.gold -= price;
         up.apply(this.stats);
-        this.shopOffers[index] = null as any;
+        this.shopOffers[index] = null;
+        this.shopLocks[index] = false;
         this.overlays.updateShop(this.shopOffers, this.gold);
         SoundFX.I.buy();
         return true;
+    }
+
+    /** 商店锁定/解锁槽位：锁定道具在刷新与下一波原位保留，购买后自动解锁 */
+    public toggleShopLock(index: number) {
+        if (this.state !== 'shop') return;
+        if (!this.shopOffers[index]) return;
+        this.shopLocks[index] = !this.shopLocks[index];
+        this.overlays.updateShop(this.shopOffers, this.gold);
+        SoundFX.I.pick();
     }
 
     /** 商店刷新货架 */
@@ -1481,6 +1534,9 @@ export class GameRoot extends Component {
         this.runDashes = 0;
         this.runGoldPicked = 0;
         this.runEliteKills = 0;
+        this.vampCounter = 0;
+        this.shopOffers = [];
+        this.shopLocks = [false, false, false, false];
 
         if (this.mode === 'waves') {
             this.wave = 1;

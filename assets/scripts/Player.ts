@@ -10,7 +10,7 @@ const ORBIT_SPEED = 2.6;  // 电球旋转角速度（弧度/秒）
 
 const DASH_SPEED = 1500;      // 冲刺瞬移速度
 const DASH_DURATION = 0.13;   // 冲刺位移时长
-public static readonly DASH_CD = 2.6;  // 冲刺冷却（Hud 读取）
+const DASH_CD = 2.6;        // 冲刺冷却（Hud 读取）
 const DASH_INVINC = 0.35;     // 冲刺后无敌帧
 
 /** 玩家：霓虹箭形战机，跟随手指移动，自动射击；空格/Shift 冲刺 */
@@ -465,7 +465,7 @@ export class Player extends Component {
             const angle = (i - (count - 1) / 2) * 0.18;
             const bullet = root.getBullet();
             bullet.node.setPosition(p.x, p.y + 40, 0);
-            bullet.init(angle, BULLET_SPEED, root.stats.damage);
+            bullet.init(angle, BULLET_SPEED * root.stats.bulletSpeed, root.stats.damage, false, root.stats.pierce);
         }
         SoundFX.I.shoot();
     }
@@ -481,14 +481,14 @@ export class Player extends Component {
 
         if (stats.shieldMax > 0 && stats.shield >= 1) {
             stats.shield = 0;
-            stats.shieldTimer = GameRoot.EFFECT_DURATION.shieldRecharge;
+            stats.shieldTimer = stats.shieldCd;
             this.invincible = 0.6;
             SoundFX.I.shieldBreak();
             return false;
         }
 
         stats.hp -= dmg;
-        this.invincible = 1.0;
+        this.invincible = 1.0 + stats.iframeBonus;   // 相位装甲延长受击无敌
         SoundFX.I.hurt();
 
         if (stats.hp <= 0) {
