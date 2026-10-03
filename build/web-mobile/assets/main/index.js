@@ -1330,13 +1330,13 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         }
     }
     // ---------------- 刷怪 ----------------
-    /** 波次模式的难度基准秒数（复用无尽模式的成长曲线） */
+    /** 波次模式的难度基准秒数（复用无尽模式的成长曲线，斜率放缓） */
     difficultySec() {
-        return this.mode === 'waves' ? 20 + this.wave * 15 : this.elapsed;
+        return this.mode === 'waves' ? 15 + this.wave * 12 : this.elapsed;
     }
-    /** 威胁等级：无尽每 75 秒 +1，波次每 2 波 +1（敌军指数增强的基准） */
+    /** 威胁等级：无尽每 75 秒 +1，波次每 3 波 +1（商店成长靠金币、节奏慢，曲线放缓） */
     threatLevel() {
-        return this.mode === 'waves' ? Math.floor((this.wave - 1) / 2) : Math.floor(this.elapsed / 75);
+        return this.mode === 'waves' ? Math.floor((this.wave - 1) / 3) : Math.floor(this.elapsed / 75);
     }
     /** 威胁等级血量倍率：每级 ×1.32 指数成长，保证后期仍持续施压 */
     threatHpMul() {
@@ -1426,15 +1426,15 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         const pool = ['swift', 'split', 'barrage', 'rich'];
         return pool[Math.floor(this.rand() * pool.length)];
     }
-    /** 波次模式刷怪：按波数解锁种类、上限与批次同步加码 */
+    /** 波次模式刷怪：按波数解锁种类，上限与批次温和加码 */
     waveSpawnLogic(dt) {
         const threat = this.threatLevel();
-        const cap = Math.min(72, 26 + this.wave * 2);
+        const cap = Math.min(58, 24 + Math.floor(this.wave * 1.5));
         if (this.enemys.length < cap) {
             this.spawnTimer -= dt;
             if (this.spawnTimer <= 0) {
                 const w = this.wave;
-                const batch = Math.min(6, 1 + Math.floor(w / 5)); // 每 5 波多刷一只
+                const batch = Math.min(5, 1 + Math.floor(w / 6)); // 每 6 波多刷一只
                 for (let i = 0; i < batch; i++) {
                     const roll = this.rand();
                     let kind = 'chaser';
@@ -1456,10 +1456,10 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
                     else if (w >= 2 && roll < 0.8) {
                         kind = 'shooter';
                     }
-                    const affix = this.rollAffix(w >= 4 ? Math.min(0.3, 0.12 + 0.02 * threat) : 0);
+                    const affix = this.rollAffix(w >= 4 ? Math.min(0.25, 0.1 + 0.02 * threat) : 0);
                     this.spawnEnemy(1, kind, affix);
                 }
-                this.spawnTimer = Math.max(0.26, 1.4 - w * 0.1);
+                this.spawnTimer = Math.max(0.34, 1.5 - w * 0.09);
             }
         }
         // 每 5 波一只 Boss（波首登场）
@@ -1586,13 +1586,13 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         const value = e.gemValue();
         const p = e.node.getPosition();
         if (this.mode === 'waves') {
-            // 波次模式：击杀掉金币
+            // 波次模式：击杀掉金币（掉率随版本调优，保证商店成长节奏）
             if (e.isBoss) {
-                this.addGold(10, false);
-                this.spawnFloatText(p.x, p.y + 30, '+10 金', new Color(251, 191, 36), 26);
+                this.addGold(15, false);
+                this.spawnFloatText(p.x, p.y + 30, '+15 金', new Color(251, 191, 36), 26);
             }
             else if (value > 0) {
-                const chance = e.affix === 'rich' ? 1.0 : (e.isElite ? 0.9 : 0.45);
+                const chance = e.affix === 'rich' ? 1.0 : (e.isElite ? 0.9 : 0.55);
                 if (this.rand() < chance) {
                     const gem = this.getGem();
                     const coinVal = e.isElite ? 3 : 1;
@@ -2316,7 +2316,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
     }
     /** 波次结束：发波次奖励金币并进商店 */
     endWave() {
-        const bonus = 18 + this.wave * 4;
+        const bonus = 24 + this.wave * 6;
         this.addGold(bonus, false);
         this.spawnFloatText(this.playerNode.position.x, this.playerNode.position.y + 80, `波次奖励 +${bonus} 金`, new Color(251, 191, 36), 24);
         this.state = 'shop';
@@ -2330,9 +2330,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
             const up = this.shopOffers[i];
             return (up && this.shopLocks[i]) ? up : null;
         });
-        const exclude = keep.filter(u => !!u);
+        const exclude = keep.filter((u) => !!u);
         const fresh = rollUpgrades(this.stats, 4, exclude);
-        this.shopOffers = keep.map(up => up !== null ? up : (fresh.shift() || null));
+        this.shopOffers = keep.map(up => { var _a; return up !== null ? up : ((_a = fresh.shift()) !== null && _a !== void 0 ? _a : null); });
         this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
     }
     rerollCost() { return 8 + this.shopRerolls * 4; }
@@ -2386,7 +2386,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         if (this.state !== 'shop')
             return;
         this.wave += 1;
-        this.waveTime = Math.min(24 + this.wave * 2, 40);
+        this.waveTime = Math.min(22 + this.wave * 2, 36);
         this.overlays.hideAll();
         this.state = 'playing';
         SoundFX.I.pick();
@@ -2496,9 +2496,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.shopLocks = [false, false, false, false];
         if (this.mode === 'waves') {
             this.wave = 1;
-            this.waveTime = Math.min(24 + this.wave * 2, 40);
+            this.waveTime = Math.min(22 + this.wave * 2, 36);
             this.waveBossDone = 0;
-            this.gold = 30 * MetaSave.metaLevel('startGold'); // 战备资金
+            this.gold = 30 + 30 * MetaSave.metaLevel('startGold'); // 战备资金（基础 30 + 每级 30）
         }
         else {
             this.wave = 0;
@@ -4071,7 +4071,7 @@ const ORBIT_RADIUS = 78;
 const ORBIT_SPEED = 2.6; // 电球旋转角速度（弧度/秒）
 const DASH_SPEED = 1500; // 冲刺瞬移速度
 const DASH_DURATION = 0.13; // 冲刺位移时长
-DASH_CD = 2.6; // 冲刺冷却（Hud 读取）
+const DASH_CD = 2.6; // 冲刺冷却（Hud 读取）
 const DASH_INVINC = 0.35; // 冲刺后无敌帧
 /** 玩家：霓虹箭形战机，跟随手指移动，自动射击；空格/Shift 冲刺 */
 let Player = class Player extends Component {
