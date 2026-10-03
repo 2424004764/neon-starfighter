@@ -1,7 +1,8 @@
 import { _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, EventKeyboard, KeyCode, tween, Mask } from 'cc';
 import { Stats, createBaseStats, rollUpgrades, Upgrade } from './Upgrades';
+import * as MetaSave from './MetaSave';
 import { Player } from './Player';
-import { Enemy, EnemyKind } from './Enemy';
+import { Enemy, EnemyKind, EnemyAffix } from './Enemy';
 import { Bullet } from './Bullet';
 import { Missile } from './Missile';
 import { Gem } from './Gem';
@@ -11,8 +12,12 @@ import { Overlays } from './Overlays';
 import { SoundFX } from './SoundFX';
 const { ccclass, executionOrder } = _decorator;
 
+export type GameMode = 'endless' | 'waves' | 'daily';
+
+interface Blackhole { node: Node; ring: Node; life: number; dmgTick: number; level: number; }
+
 /**
- * 《霓虹深空》主控：状态机 / 刷怪 / 碰撞 / 经验升级 / 对象池
+ * 《霓虹深空》主控：状态机 / 刷怪 / 碰撞 / 经验升级 / 对象池 / 模式与结算
  * 视觉全部由代码绘制，不依赖图片资源
  */
 @ccclass('GameRoot')
@@ -21,9 +26,10 @@ export class GameRoot extends Component {
     public static I: GameRoot = null!;
 
     /** 道具效果持续时长（秒），Hud 状态栏与效果计时共用 */
-    public static readonly EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12, invinc: 5 };
+    public static readonly EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12, invinc: 5, freezeField: 2.5 };
 
-    public state: 'menu' | 'playing' | 'paused' | 'levelup' | 'gameover' = 'menu';
+    public state: 'menu' | 'playing' | 'paused' | 'levelup' | 'shop' | 'gameover' = 'menu';
+    public mode: GameMode = 'endless';
     public stats: Stats = createBaseStats();
     public level = 1;
     public xp = 0;
@@ -32,12 +38,29 @@ export class GameRoot extends Component {
     public elapsed = 0;
     public halfSize: Vec3 = new Vec3(360, 640, 0);
 
+    /** 波次商店模式：金币 / 当前波 / 本波剩余时间 */
+    public gold = 0;
+    public wave = 0;
+    public waveTime = 0;
+    public shopRerolls = 0;
+    public shopOffers: Upgrade[] = [];
+
+    /** 结算数据核心与每日纪录（gameover 面板读取） */
+    public lastCoresEarned = 0;
+    public lastDailyRecord = false;
+
     public playerNode: Node = null!;
     public bullets: Bullet[] = [];
     public missiles: Missile[] = [];
     public enemys: Enemy[] = [];
     public gems: Gem[] = [];
     public boss: Enemy | null = null;
+    public blackholes: Blackhole[] = [];
+
+    // 单局统计（成就用）
+    public runDashes = 0;
+    public runGoldPicked = 0;
+    public runEliteKills = 0;
 
     // 道具效果（剩余秒数，0 表示无）
     public effectMagnet = 0;
@@ -45,11 +68,17 @@ export class GameRoot extends Component {
     public effectXp2 = 0;
     public effectInvinc = 0;
 
+    /** 游戏随机源：每日挑战换为种子随机，保证全球玩家同序列 */
+    public rng: () => number = Math.random;
+
     private ready = false;
     private pendingLevelUps = 0;
     private spawnTimer = 0;
     private eliteTimer = 15;
     private bossTimer = 45;
+    private turretTimer = 55;
+    private waveBossDone = 0;   // 波次模式：本波是否已出 Boss
+    private lastThreat = -1;    // 已播报过的威胁等级
     private bulletPool: Bullet[] = [];
     private missilePool: Missile[] = [];
     private powerPool: PowerUp[] = [];
@@ -79,7 +108,7 @@ export class GameRoot extends Component {
         SoundFX.I.init();
         input.on(Input.EventType.TOUCH_START, () => { SoundFX.I.init(); });
 
-        // 键盘：Esc / 空格 暂停与继续
+        // 键盘：Esc 暂停 / 各面板专用键
         input.on(Input.EventType.KEY_DOWN, this.onKeyDown, this);
 
         // 世界层（星空 + 实体），并用矩形遮罩把内容严格裁剪在画幅内
@@ -103,11 +132,14 @@ export class GameRoot extends Component {
 
         this.ready = true;
         this.restart();
-        // 进入开始界面：点「开始新游戏」或按空格才正式开局
+        // 进入开始界面：从菜单选择模式后正式开局
         this.hud.setHidden(true);
         this.state = 'menu';
         this.overlays.showMenu();
     }
+
+    /** 统一随机：影响玩法的掷点都走这里（每日挑战可播种） */
+    public rand(): number { return this.rng(); }
 
     /** 星云色块 + 三层视差星空（范围限定在画幅内） */
     private buildStarfield() {
@@ -215,16 +247,11 @@ export class GameRoot extends Component {
         this.meteors.push({ node: n, vx, vy, life, op });
     }
 
-    /** 给节点挂图形组件 */
-    private getGraphics(n: Node): Graphics {
-        return n.getComponent(Graphics) || n.addComponent(Graphics);
-    }
-
-    /** 键盘：升级选卡用 W/S/空格；开始界面空格开局；其余时候 Esc/空格 切换暂停 */
+    /** 键盘：菜单空格开局；升级/商店选卡；Esc 暂停（空格已让位给冲刺） */
     private onKeyDown(e: EventKeyboard) {
         if (this.state === 'menu') {
             if (e.keyCode === KeyCode.SPACE || e.keyCode === KeyCode.ENTER) {
-                this.startGame();
+                this.startGame('endless');
             }
             return;
         }
@@ -238,14 +265,33 @@ export class GameRoot extends Component {
             }
             return;
         }
+        if (this.state === 'shop') {
+            if (e.keyCode === KeyCode.KEY_W || e.keyCode === KeyCode.ARROW_UP) {
+                this.overlays.moveShopSel(-1);
+            } else if (e.keyCode === KeyCode.KEY_S || e.keyCode === KeyCode.ARROW_DOWN) {
+                this.overlays.moveShopSel(1);
+            } else if (e.keyCode === KeyCode.SPACE) {
+                this.overlays.confirmShopSel();
+            } else if (e.keyCode === KeyCode.ENTER || e.keyCode === KeyCode.KEY_N || e.keyCode === KeyCode.KEY_R) {
+                this.nextWave();
+            }
+            return;
+        }
         if (e.keyCode === KeyCode.ESCAPE || e.keyCode === KeyCode.SPACE) {
             this.togglePause();
         }
     }
 
-    /** 从开始界面正式开局 */
-    public startGame() {
+    /** 从开始界面选择模式正式开局 */
+    public startGame(mode: GameMode) {
         if (this.state !== 'menu') return;
+        this.mode = mode;
+        if (mode === 'daily') {
+            // 当天全球同一套序列：日期做种子
+            this.rng = MetaSave.mulberry32(MetaSave.hashSeed('neon-daily-' + MetaSave.todayKey()));
+        } else {
+            this.rng = Math.random;
+        }
         this.hud.setHidden(false);
         this.overlays.hideAll();
         this.restart();
@@ -265,6 +311,16 @@ export class GameRoot extends Component {
         }
     }
 
+    /** 回主菜单（清场但保留局外存档状态） */
+    public backToMenu() {
+        this.clearWorld();
+        this.state = 'menu';
+        this.hud.setHidden(true);
+        this.overlays.hideAll();
+        this.overlays.showMenu();
+        SoundFX.I.pick();
+    }
+
     update(dt: number) {
         if (!this.ready) return;
 
@@ -276,7 +332,7 @@ export class GameRoot extends Component {
         // 暂停时整个世界冻结
         if (this.state === 'paused') return;
 
-        // 背景视觉时钟（升级选卡时宇宙仍在流动）
+        // 背景视觉时钟（升级选卡/购物时宇宙仍在流动）
         this.visualT += dt;
         const vt = this.visualT;
 
@@ -330,14 +386,42 @@ export class GameRoot extends Component {
         if (this.state !== 'playing') return;
 
         this.elapsed += dt;
+
+        // 威胁等级提升：全场播报 + 警报 + 红色脉冲
+        const threat = this.threatLevel();
+        if (threat > this.lastThreat) {
+            this.lastThreat = threat;
+            if (threat > 0) {
+                this.overlays.toast(`⚠ 威胁等级 ${threat} · 敌军增援抵达`);
+                SoundFX.I.bossAlarm();
+                const pp = this.playerNode.getPosition();
+                this.spawnRingFx(pp.x, pp.y, 660, new Color(244, 63, 94, 150), 6, 0.7);
+            }
+        }
+
         this.spawnLogic(dt);
         this.checkCollisions();
+        this.updateBlackholes(dt);
 
         // 道具效果倒计时
         if (this.effectMagnet > 0) { this.effectMagnet -= dt; }
         if (this.effectRage > 0) { this.effectRage -= dt; }
         if (this.effectXp2 > 0) { this.effectXp2 -= dt; }
         if (this.effectInvinc > 0) { this.effectInvinc -= dt; }
+
+        // 波次模式：本波倒计时结束 → 进商店
+        if (this.mode === 'waves') {
+            this.waveTime -= dt;
+            if (this.waveTime <= 0) {
+                this.endWave();
+                return;
+            }
+        }
+
+        // 无尽模式存活 5 分钟成就
+        if (this.mode === 'endless' && this.elapsed >= 300) {
+            this.tryUnlock('survivor');
+        }
 
         if (this.pendingLevelUps > 0) {
             this.state = 'levelup';
@@ -348,29 +432,71 @@ export class GameRoot extends Component {
 
     // ---------------- 刷怪 ----------------
 
+    /** 波次模式的难度基准秒数（复用无尽模式的成长曲线） */
+    private difficultySec(): number {
+        return this.mode === 'waves' ? 20 + this.wave * 15 : this.elapsed;
+    }
+
+    /** 威胁等级：无尽每 75 秒 +1，波次每 2 波 +1（敌军指数增强的基准） */
+    public threatLevel(): number {
+        return this.mode === 'waves' ? Math.floor((this.wave - 1) / 2) : Math.floor(this.elapsed / 75);
+    }
+
+    /** 威胁等级血量倍率：每级 ×1.32 指数成长，保证后期仍持续施压 */
+    public threatHpMul(): number {
+        return Math.pow(1.32, this.threatLevel());
+    }
+
+    /** 威胁等级移速倍率（封顶 1.8） */
+    public threatSpeedMul(): number {
+        return Math.min(1.8, 1 + 0.06 * this.threatLevel());
+    }
+
+    /** 敌机每次碰撞 / 光球 / 自爆的伤害（威胁等级越高越痛） */
+    public enemyHitDamage(): number {
+        return 1 + Math.floor(this.threatLevel() / 3);
+    }
+
     private spawnLogic(dt: number) {
-        // 场上普通怪太多时先停止刷新（Boss 不受限制）
-        if (this.enemys.length < 22) {
+        if (this.mode === 'waves') {
+            this.waveSpawnLogic(dt);
+            return;
+        }
+
+        // ---- 无尽 / 每日 ----
+        // 场上上限随时间上涨（每 12 秒 +1，封顶 70），后期成批刷新
+        const threat = this.threatLevel();
+        const cap = Math.min(70, 22 + Math.floor(this.elapsed / 12));
+        if (this.enemys.length < cap) {
             this.spawnTimer -= dt;
             if (this.spawnTimer <= 0) {
-                // 敌机种类：10 秒后出现巡卫，20 秒后出现突袭者，15 秒后出现分裂体
-                let kind: EnemyKind = 'chaser';
-                const roll = Math.random();
-                if (this.elapsed > 20 && roll < 0.2) { kind = 'speeder'; }
-                else if (this.elapsed > 15 && roll < 0.42) { kind = 'splitter'; }
-                else if (this.elapsed > 10 && roll < 0.62) { kind = 'shooter'; }
-                this.spawnEnemy(1, kind);
-                // 开局 1.8 秒一只，随时间逐渐压缩到 0.45 秒
-                this.spawnTimer = Math.max(0.45, 1.8 - this.elapsed * 0.01);
+                const batch = Math.min(6, 1 + Math.floor(this.elapsed / 75));   // 75 秒后 2 只/批，封顶 6 只
+                for (let i = 0; i < batch; i++) {
+                    const kind = this.rollEndlessKind();
+                    const affix = this.rollAffix(this.elapsed > 40 ? Math.min(0.3, 0.12 + 0.02 * threat) : 0);
+                    this.spawnEnemy(1, kind, affix);
+                }
+                // 开局 1.8 秒一批，随时间逐渐压缩到 0.26 秒
+                this.spawnTimer = Math.max(0.26, 1.8 - this.elapsed * 0.012);
             }
         } else {
             this.spawnTimer = 0.5;
         }
 
+        // 精英词条猎手：30 秒后周期来袭，威胁等级越高越频繁
         this.eliteTimer -= dt;
         if (this.elapsed > 30 && this.eliteTimer <= 0) {
-            this.spawnEnemy(1.5, 'chaser'); // 精英猎手：更大更硬
-            this.eliteTimer = 20;
+            this.spawnEnemy(1.3, 'chaser', this.rollAffix(1));
+            this.eliteTimer = Math.max(7, 18 - threat);
+        }
+
+        // 哨戒炮：55 秒后周期登场，威胁等级提高数量上限与登场频率
+        this.turretTimer -= dt;
+        if (this.elapsed > 55 && this.turretTimer <= 0) {
+            if (this.countKind('turret') < Math.min(6, 3 + Math.floor(threat / 3))) {
+                this.spawnEnemy(1.15, 'turret');
+            }
+            this.turretTimer = Math.max(12, 22 - threat);
         }
 
         // Boss：45 秒首次登场，此后每 75 秒一只
@@ -382,7 +508,64 @@ export class GameRoot extends Component {
         }
     }
 
-    private spawnEnemy(scale: number, kind: EnemyKind = 'chaser') {
+    /** 无尽模式敌机种类掷点（新敌机随时间加入） */
+    private rollEndlessKind(): EnemyKind {
+        const roll = this.rand();
+        const t = this.elapsed;
+        if (t > 20 && roll < 0.16) { return 'speeder'; }
+        if (t > 15 && roll < 0.34) { return 'splitter'; }
+        if (t > 10 && roll < 0.52) { return 'shooter'; }
+        if (t > 25 && roll < 0.66) { return 'bomber'; }
+        if (t > 35 && roll < 0.74) { return 'healer'; }
+        return 'chaser';
+    }
+
+    /** 词条掷点：p 为概率 */
+    private rollAffix(p: number): EnemyAffix {
+        if (this.rand() >= p) { return ''; }
+        const pool: EnemyAffix[] = ['swift', 'split', 'barrage', 'rich'];
+        return pool[Math.floor(this.rand() * pool.length)];
+    }
+
+    /** 波次模式刷怪：按波数解锁种类、上限与批次同步加码 */
+    private waveSpawnLogic(dt: number) {
+        const threat = this.threatLevel();
+        const cap = Math.min(72, 26 + this.wave * 2);
+        if (this.enemys.length < cap) {
+            this.spawnTimer -= dt;
+            if (this.spawnTimer <= 0) {
+                const w = this.wave;
+                const batch = Math.min(6, 1 + Math.floor(w / 5));   // 每 5 波多刷一只
+                for (let i = 0; i < batch; i++) {
+                    const roll = this.rand();
+                    let kind: EnemyKind = 'chaser';
+                    if (w >= 6 && roll < 0.08) { kind = 'turret'; }
+                    else if (w >= 5 && roll < 0.18) { kind = 'healer'; }
+                    else if (w >= 4 && roll < 0.32) { kind = 'speeder'; }
+                    else if (w >= 3 && roll < 0.5) { kind = 'bomber'; }
+                    else if (w >= 3 && roll < 0.62) { kind = 'splitter'; }
+                    else if (w >= 2 && roll < 0.8) { kind = 'shooter'; }
+                    const affix = this.rollAffix(w >= 4 ? Math.min(0.3, 0.12 + 0.02 * threat) : 0);
+                    this.spawnEnemy(1, kind, affix);
+                }
+                this.spawnTimer = Math.max(0.26, 1.4 - w * 0.1);
+            }
+        }
+        // 每 5 波一只 Boss（波首登场）
+        if (this.wave % 5 === 0 && this.waveBossDone < this.wave && !this.boss) {
+            this.spawnEnemy(2.4, 'boss');
+            SoundFX.I.bossAlarm();
+            this.waveBossDone = this.wave;
+        }
+    }
+
+    private countKind(kind: EnemyKind): number {
+        let n = 0;
+        for (const e of this.enemys) { if (!e.dead && e.kind === kind) n++; }
+        return n;
+    }
+
+    private spawnEnemy(scale: number, kind: EnemyKind = 'chaser', affix: EnemyAffix = '') {
         let e = this.enemyPool.pop();
         if (!e) {
             const n = new Node('Enemy');
@@ -392,7 +575,7 @@ export class GameRoot extends Component {
             this.worldLayer.addChild(n);
             e = n.getComponent(Enemy)!;
         }
-        e.init(scale, this.elapsed, kind);
+        e.init(scale, this.difficultySec(), kind, affix);
         this.enemys.push(e);
         if (kind === 'boss') {
             this.boss = e;
@@ -408,11 +591,47 @@ export class GameRoot extends Component {
         }
     }
 
-    /** 敌方光球 */
+    /** 敌方光球（威胁等级提升弹速） */
     public spawnEnemyBullet(x: number, y: number, angle: number, speed: number) {
         const b = this.getBullet();
         b.node.setPosition(x, y, 0);
-        b.init(angle, speed, 1, true);
+        const mul = 1 + 0.04 * Math.min(this.threatLevel(), 15);
+        b.init(angle, speed * mul, 1, true);
+    }
+
+    /** 弹幕词条：死亡放出 8 向环形弹幕 */
+    public enemyDeathBarrage(pos: Vec3) {
+        for (let i = 0; i < 8; i++) {
+            this.spawnEnemyBullet(pos.x, pos.y, i / 8 * Math.PI * 2, 190);
+        }
+        SoundFX.I.enemyShoot();
+    }
+
+    /** 治疗者脉冲：治疗周围敌机并放出绿色光环 */
+    public healPulse(pos: Vec3) {
+        this.spawnRingFx(pos.x, pos.y, 230, new Color(52, 211, 153, 200), 4, 0.5);
+        const heal = Math.min(1 + Math.floor(this.difficultySec() / 120), 3);
+        for (const e of this.enemys) {
+            if (e.dead || e.kind === 'healer') continue;
+            const ep = e.node.getPosition();
+            const dx = ep.x - pos.x, dy = ep.y - pos.y;
+            if (dx * dx + dy * dy < 230 * 230) {
+                e.heal(heal);
+                this.spawnFloatText(ep.x, ep.y + 26, '+' + heal, new Color(134, 239, 172), 16);
+            }
+        }
+    }
+
+    /** 自爆蜂爆炸：范围伤害玩家 + 橙色冲击波 */
+    public bomberExplode(pos: Vec3) {
+        this.spawnRingFx(pos.x, pos.y, 120, new Color(251, 146, 60, 230), 6, 0.4);
+        this.spawnFlashFx(pos.x, pos.y, 55, new Color(254, 240, 138, 180));
+        SoundFX.I.boom(false);
+        const pp = this.playerNode.getPosition();
+        const dx = pp.x - pos.x, dy = pp.y - pos.y;
+        if (dx * dx + dy * dy < 120 * 120) {
+            this.playerNode.getComponent(Player)!.takeDamage(this.enemyHitDamage());
+        }
     }
 
     public recycleEnemy(e: Enemy) {
@@ -425,22 +644,50 @@ export class GameRoot extends Component {
 
     public onEnemyKilled(e: Enemy) {
         this.kills += 1;
+        MetaSave.addTotalKills(1);
+        this.tryUnlock('firstBlood');
+        if (this.kills >= 100) { this.tryUnlock('slayer'); }
+        if (e.isBoss) {
+            this.tryUnlock('bossKiller');
+        }
+        if (e.isElite) {
+            this.runEliteKills += 1;
+            if (this.runEliteKills >= 5) { this.tryUnlock('eliteHunter'); }
+        }
+
         const value = e.gemValue();
-        if (value > 0) {
-            const p = e.node.getPosition();
+        const p = e.node.getPosition();
+        if (this.mode === 'waves') {
+            // 波次模式：击杀掉金币
+            if (e.isBoss) {
+                this.addGold(10, false);
+                this.spawnFloatText(p.x, p.y + 30, '+10 金', new Color(251, 191, 36), 26);
+            } else if (value > 0) {
+                const chance = e.affix === 'rich' ? 1.0 : (e.isElite ? 0.9 : 0.45);
+                if (this.rand() < chance) {
+                    const gem = this.getGem();
+                    const coinVal = e.isElite ? 3 : 1;
+                    gem.init(p.x, p.y, coinVal, true);
+                    this.gems.push(gem);
+                }
+            }
+        } else if (value > 0) {
             // 25% 概率能量直接入包（带飘字反馈），否则掉落宝石
-            if (Math.random() < 0.25) {
+            if (this.rand() < 0.25) {
                 this.addXp(value);
                 this.spawnFloatText(p.x, p.y, '+' + value, new Color(165, 243, 252));
             } else {
                 const gem = this.getGem();
-                gem.node.setPosition(p.x, p.y, 0);
-                gem.init(p.x, p.y, value);
+                gem.init(p.x, p.y, value, false);
                 this.gems.push(gem);
             }
         }
-        // 掉落随机道具（Boss 必掉）
-        if (e.isBoss || Math.random() < 0.08) {
+        // 掉落随机道具（Boss 必掉，贪婪词条较高概率）
+        if (e.isBoss) {
+            this.dropPowerUp(e.node.getPosition());
+        } else if (e.affix === 'rich') {
+            if (this.rand() < 0.35) { this.dropPowerUp(e.node.getPosition()); }
+        } else {
             this.tryDropPowerUp(e.node.getPosition());
         }
         SoundFX.I.boom(e.isBoss);
@@ -451,7 +698,7 @@ export class GameRoot extends Component {
 
     /**
      * 对敌人结算一次伤害：掷暴击、应用伤害、弹出伤害数字
-     * 所有伤害来源（子弹/电球/导弹）统一走这里
+     * 所有伤害来源（子弹/电球/导弹/镭射/黑洞/闪电链）统一走这里
      */
     public dealDamage(e: Enemy, baseDamage: number) {
         if (e.dead) return;
@@ -464,6 +711,240 @@ export class GameRoot extends Component {
             this.spawnFloatText(ep.x + (Math.random() * 30 - 15), ep.y + 20, `${dmg}`, new Color(224, 242, 254), 18);
         }
         e.hurt(dmg);
+        // 闪电链：暴击时概率向附近敌人跳跃
+        if (isCrit && this.stats.chain > 0 && this.rand() < 0.5) {
+            this.chainLightning(e, baseDamage);
+        }
+    }
+
+    /** 闪电链：从暴击目标起跳，最多 3 跳，伤害逐跳衰减 */
+    private chainLightning(from: Enemy, baseDamage: number) {
+        const jumps = 2 + this.stats.chain;   // 等级越高跳得越多（3~5 个目标）
+        let src = from.node.getPosition();
+        const hit = new Set<Enemy>([from]);
+        for (let i = 1; i <= jumps; i++) {
+            let best: Enemy | null = null;
+            let bestD = 260 * 260;
+            for (const e of this.enemys) {
+                if (e.dead || hit.has(e)) continue;
+                const ep = e.node.getPosition();
+                const dx = ep.x - src.x, dy = ep.y - src.y;
+                const d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = e; }
+            }
+            if (!best) break;
+            const bp = best.node.getPosition();
+            this.spawnLightningArc(src, bp);
+            const dmg = Math.max(1, Math.round(baseDamage * Math.pow(0.7, i)));
+            best.hurt(dmg);
+            this.spawnFloatText(bp.x, bp.y + 16, `${dmg}`, new Color(196, 181, 253), 18);
+            hit.add(best);
+            src = bp;
+        }
+        SoundFX.I.chain();
+    }
+
+    /** 闪电弧视觉：抖动折线，快速淡出 */
+    private spawnLightningArc(a: Vec3, b: Vec3) {
+        const n = new Node('lightning');
+        n.addComponent(UITransform).setContentSize(10, 10);
+        const g = n.addComponent(Graphics);
+        g.strokeColor = new Color(216, 200, 255, 235);
+        g.lineWidth = 3.5;
+        const segs = 5;
+        g.moveTo(a.x, a.y);
+        for (let i = 1; i < segs; i++) {
+            const t = i / segs;
+            const jx = (this.rand() * 2 - 1) * 26;
+            const jy = (this.rand() * 2 - 1) * 26;
+            g.lineTo(a.x + (b.x - a.x) * t + jx, a.y + (b.y - a.y) * t + jy);
+        }
+        g.lineTo(b.x, b.y);
+        g.stroke();
+        g.strokeColor = new Color(255, 255, 255, 160);
+        g.lineWidth = 1.5;
+        g.stroke();
+        this.worldLayer.addChild(n);
+        const op = n.addComponent(UIOpacity);
+        tween(op).to(0.22, { opacity: 0 }).call(() => { n.destroy(); }).start();
+    }
+
+    /** 镭射：以战机为中心向上齐射，等级数 = 光束道数，贯穿全部敌机 */
+    public fireLaser() {
+        const lvl = this.stats.laser;
+        const p = this.playerNode.getPosition();
+        const top = this.halfSize.y + 30;
+        const halfW = 24;
+        const spacing = 105;
+
+        // 光束横坐标：以战机为中心对称分布（1 道=中央，2 道=两侧，3 道=中+两侧）
+        const beamX: number[] = [];
+        for (let i = 0; i < lvl; i++) {
+            beamX.push((i - (lvl - 1) / 2) * spacing);
+        }
+        for (const dx of beamX) {
+            this.spawnLaserBeam(p.x + dx, p.y, halfW, top);
+        }
+
+        // 伤害：命中任意一道光束
+        const dmg = Math.max(1, Math.round(this.stats.damage * (1 + 0.35 * (lvl - 1))));
+        for (const e of this.enemys.slice()) {
+            if (e.dead) continue;
+            const ep = e.node.getPosition();
+            if (ep.y <= p.y) continue;
+            const r = halfW + 26 * e.node.scale.x;
+            if (beamX.some(dx => Math.abs(ep.x - (p.x + dx)) < r)) {
+                this.dealDamage(e, dmg);
+            }
+        }
+        SoundFX.I.laser();
+    }
+
+    /** 单道镭射视觉：三层光带 + 收拢淡出 */
+    private spawnLaserBeam(x: number, y0: number, halfW: number, top: number) {
+        const n = new Node('laser');
+        n.addComponent(UITransform).setContentSize(10, 10);
+        n.setPosition(x, 0, 0);
+        const g = n.addComponent(Graphics);
+        g.fillColor = new Color(244, 114, 182, 60);
+        g.rect(-halfW, y0 + 20, halfW * 2, top - y0);
+        g.fill();
+        g.fillColor = new Color(247, 168, 208, 150);
+        g.rect(-halfW * 0.45, y0 + 20, halfW * 0.9, top - y0);
+        g.fill();
+        g.fillColor = new Color(255, 228, 240);
+        g.rect(-5, y0 + 20, 10, top - y0);
+        g.fill();
+        this.worldLayer.addChild(n);
+        const op = n.addComponent(UIOpacity);
+        tween(n).to(0.24, { scale: new Vec3(0.05, 1, 1) }).start();
+        tween(op).to(0.24, { opacity: 0 }).call(() => { n.destroy(); }).start();
+    }
+
+    /** 黑洞弹：在敌群密集处生成黑洞 */
+    public spawnBlackhole() {
+        const lvl = this.stats.blackhole;
+        // 优先挂在存活敌机最密集的位置附近
+        let cx = this.playerNode.position.x + (this.rand() * 2 - 1) * 160;
+        let cy = this.playerNode.position.y + 220 + this.rand() * 180;
+        let bestScore = -1;
+        for (const e of this.enemys) {
+            if (e.dead) continue;
+            const ep = e.node.getPosition();
+            if (ep.y < -this.halfSize.y * 0.4) continue;
+            let score = 0;
+            for (const o of this.enemys) {
+                if (o.dead) continue;
+                const op = o.node.getPosition();
+                const dx = op.x - ep.x, dy = op.y - ep.y;
+                if (dx * dx + dy * dy < 220 * 220) { score += 1; }
+            }
+            if (score > bestScore) { bestScore = score; cx = ep.x; cy = ep.y; }
+        }
+        cy = Math.min(cy, this.halfSize.y - 120);
+        cx = Math.max(-this.halfSize.x + 100, Math.min(this.halfSize.x - 100, cx));
+
+        const n = new Node('blackhole');
+        n.addComponent(UITransform).setContentSize(10, 10);
+        const core = new Node('core');
+        n.addChild(core);
+        const cg = core.addComponent(Graphics);
+        cg.fillColor = new Color(15, 10, 30, 235);
+        cg.circle(0, 0, 34);
+        cg.fill();
+        cg.strokeColor = new Color(129, 140, 248, 220);
+        cg.lineWidth = 5;
+        cg.circle(0, 0, 36);
+        cg.stroke();
+        const ring = new Node('ring');
+        n.addChild(ring);
+        const rg = ring.addComponent(Graphics);
+        for (let i = 0; i < 3; i++) {
+            rg.strokeColor = new Color(165, 180, 252, 190 - i * 40);
+            rg.lineWidth = 4;
+            rg.arc(0, 0, 48 + i * 22, i * 2.1, i * 2.1 + 4.4);
+            rg.stroke();
+        }
+        n.setPosition(cx, cy, 0);
+        this.worldLayer.addChild(n);
+
+        const bh: Blackhole = { node: n, ring, life: 3, dmgTick: 0, level: lvl };
+        this.blackholes.push(bh);
+        tween(n).from({ scale: new Vec3(0.1, 0.1, 1) }).to(0.25, { scale: new Vec3(1, 1, 1) }).start();
+    }
+
+    private updateBlackholes(dt: number) {
+        for (let i = this.blackholes.length - 1; i >= 0; i--) {
+            const bh = this.blackholes[i];
+            bh.life -= dt;
+            bh.ring.angle += 200 * dt;
+            bh.dmgTick -= dt;
+            const c = bh.node.getPosition();
+            const pullR = 240 + bh.level * 20;
+
+            // 吸聚：Boss 与哨戒炮不受位移影响
+            for (const e of this.enemys) {
+                if (e.dead || e.isBoss || e.kind === 'turret') continue;
+                const ep = e.node.getPosition();
+                const dx = c.x - ep.x, dy = c.y - ep.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < pullR * pullR && d2 > 1) {
+                    const d = Math.sqrt(d2);
+                    const pull = 340 * (1 - d / pullR) + 80;
+                    e.node.setPosition(ep.x + dx / d * pull * dt, ep.y + dy / d * pull * dt, 0);
+                }
+            }
+            // 碾压伤害：近身周期结算
+            if (bh.dmgTick <= 0) {
+                bh.dmgTick = 0.4;
+                const dmg = Math.max(1, Math.round(this.stats.damage * (0.6 + 0.3 * bh.level)));
+                for (const e of this.enemys.slice()) {
+                    if (e.dead) continue;
+                    const ep = e.node.getPosition();
+                    const dx = ep.x - c.x, dy = ep.y - c.y;
+                    if (dx * dx + dy * dy < 95 * 95) {
+                        this.dealDamage(e, dmg);
+                    }
+                }
+            }
+            if (bh.life <= 0) {
+                this.spawnRingFx(c.x, c.y, 150, new Color(129, 140, 248, 220), 5, 0.35);
+                bh.node.destroy();
+                this.blackholes.splice(i, 1);
+            }
+        }
+    }
+
+    /** 扩散圆环特效 */
+    public spawnRingFx(x: number, y: number, radius: number, color: Color, lineWidth: number, dur: number) {
+        const n = new Node('ring-fx');
+        n.addComponent(UITransform).setContentSize(10, 10);
+        const g = n.addComponent(Graphics);
+        g.strokeColor = color;
+        g.lineWidth = lineWidth;
+        g.circle(0, 0, radius);
+        g.stroke();
+        n.setPosition(x, y, 0);
+        n.setScale(0.15, 0.15, 1);
+        this.worldLayer.addChild(n);
+        tween(n).to(dur, { scale: new Vec3(1, 1, 1) }).start();
+        const op = n.addComponent(UIOpacity);
+        tween(op).to(dur, { opacity: 0 }).call(() => { n.destroy(); }).start();
+    }
+
+    /** 闪光圆特效（自爆等） */
+    private spawnFlashFx(x: number, y: number, radius: number, color: Color) {
+        const n = new Node('flash-fx');
+        n.addComponent(UITransform).setContentSize(10, 10);
+        const g = n.addComponent(Graphics);
+        g.fillColor = color;
+        g.circle(0, 0, radius);
+        g.fill();
+        n.setPosition(x, y, 0);
+        this.worldLayer.addChild(n);
+        const op = n.addComponent(UIOpacity);
+        tween(n).to(0.3, { scale: new Vec3(1.5, 1.5, 1) }).start();
+        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); }).start();
     }
 
     /** 击杀反馈飘字（上飘 + 淡出后销毁），size 可调以区分暴击 */
@@ -550,7 +1031,13 @@ export class GameRoot extends Component {
 
     // ---------------- 随机道具 ----------------
 
-    private static POWER_KINDS: PowerUpKind[] = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'crit', 'invinc', 'shield', 'xp2'];
+    /** 基础掉落池；暴击率满值后不再掉「暴」，冰冻力场需成就「精英猎人」解锁 */
+    private powerKinds(): PowerUpKind[] {
+        const kinds: PowerUpKind[] = ['magnet', 'vacuum', 'rage', 'heal1', 'heal3', 'invinc', 'shield', 'xp2'];
+        if (this.stats.critRate < 0.6) { kinds.push('crit'); }
+        if (MetaSave.hasAchievement('eliteHunter')) { kinds.push('freezeField'); }
+        return kinds;
+    }
 
     public getPowerUp(): PowerUp {
         let u = this.powerPool.pop();
@@ -571,11 +1058,20 @@ export class GameRoot extends Component {
         this.powerPool.push(u);
     }
 
-    /** 击毁敌机时按概率掉落道具 */
+    /** 击毁敌机时按概率掉落道具（幸运合约提升掉率） */
     public tryDropPowerUp(pos: Vec3) {
-        if (Math.random() > 0.08) return;
-        const kinds = GameRoot.POWER_KINDS;
-        const kind = kinds[Math.floor(Math.random() * kinds.length)];
+        const dropRate = 0.04 * (1 + 0.25 * MetaSave.metaLevel('luck'));
+        if (this.rand() > dropRate) return;
+        const kinds = this.powerKinds();
+        const kind = kinds[Math.floor(this.rand() * kinds.length)];
+        const u = this.getPowerUp();
+        u.init(kind, pos.x, pos.y);
+    }
+
+    /** 强制掉落（Boss / 贪婪词条）：绕过概率 */
+    public dropPowerUp(pos: Vec3) {
+        const kinds = this.powerKinds();
+        const kind = kinds[Math.floor(this.rand() * kinds.length)];
         const u = this.getPowerUp();
         u.init(kind, pos.x, pos.y);
     }
@@ -584,37 +1080,76 @@ export class GameRoot extends Component {
     public applyPowerUp(kind: PowerUpKind) {
         const s = this.stats;
         const D = GameRoot.EFFECT_DURATION;
+        const p = this.playerNode.getPosition();
+        // 拾取反馈飘字（战机头顶）
+        const say = (text: string, color: Color, size = 22) => {
+            this.spawnFloatText(p.x, p.y + 64, text, color, size);
+        };
         switch (kind) {
             case 'magnet':
                 this.effectMagnet = D.magnet;
+                say('磁力全开', new Color(103, 232, 249));
                 break;
             case 'invinc':
                 this.effectInvinc = D.invinc;
+                say(`无敌 ${D.invinc} 秒！`, new Color(255, 223, 128), 26);
                 break;
             case 'vacuum':
                 this.vacuumGems(); // 立即吸附全场所有能量
+                say('能量全收！', new Color(167, 139, 250));
                 break;
             case 'rage':
                 this.effectRage = D.rage;
+                say('狂暴！射速翻倍', new Color(244, 63, 94));
                 break;
             case 'xp2':
                 this.effectXp2 = D.xp2;
+                say(`双倍经验 ${D.xp2} 秒`, new Color(251, 191, 36));
                 break;
-            case 'heal1':
-                s.hp = Math.min(s.maxHp, s.hp + 1);
+            case 'freezeField':
+                // 冰冻力场：全场敌机深度冰缓
+                for (const e of this.enemys) {
+                    if (!e.dead) { e.applySlow(0.12, D.freezeField); }
+                }
+                this.spawnRingFx(p.x, p.y, 640, new Color(125, 211, 252, 200), 6, 0.6);
+                say('冰冻力场！', new Color(125, 211, 252), 26);
+                SoundFX.I.freeze();
                 break;
-            case 'heal3':
-                s.hp = Math.min(s.maxHp, s.hp + 3);
+            case 'heal1': {
+                if (s.hp >= s.maxHp) {
+                    say('生命已满', new Color(148, 163, 184), 20);
+                } else {
+                    s.hp = Math.min(s.maxHp, s.hp + 1);
+                    say(`生命 +1`, new Color(134, 239, 172));
+                }
                 break;
-            case 'crit':
-                s.critRate = Math.min(0.6, s.critRate + 0.1); // 永久提升暴击率，上限 60%
+            }
+            case 'heal3': {
+                if (s.hp >= s.maxHp) {
+                    say('生命已满', new Color(148, 163, 184), 20);
+                } else {
+                    s.hp = Math.min(s.maxHp, s.hp + 3);
+                    say(`生命 +3`, new Color(16, 185, 129));
+                }
                 break;
+            }
+            case 'crit': {
+                if (s.critRate >= 0.6) {
+                    say('暴击率已满', new Color(148, 163, 184), 20);
+                } else {
+                    s.critRate = Math.min(0.6, s.critRate + 0.1);
+                    say(`暴击率 ${Math.round(s.critRate * 100)}%`, new Color(255, 138, 61));
+                }
+                break;
+            }
             case 'shield':
                 if (s.shieldMax > 0) {
                     s.shield = 1;
                     s.shieldTimer = 0;
+                    say('护盾充能完毕', new Color(148, 163, 184));
                 } else {
                     s.hp = Math.min(s.maxHp, s.hp + 1); // 没有护盾模块时改为应急修复
+                    say('应急修复 +1', new Color(134, 239, 172));
                 }
                 break;
         }
@@ -633,12 +1168,6 @@ export class GameRoot extends Component {
         if (!g) {
             const n = new Node('Gem');
             n.addComponent(UITransform).setContentSize(16, 16);
-            const gr = n.addComponent(Graphics);
-            gr.fillColor = new Color(103, 232, 249, 70);
-            gr.circle(0, 0, 10);
-            gr.fill();
-            gr.fillColor = new Color(165, 243, 252);
-            gr.moveTo(0, -8); gr.lineTo(5, 0); gr.lineTo(0, 8); gr.lineTo(-5, 0); gr.close(); gr.fill();
             n.addComponent(Gem);
             this.worldLayer.addChild(n);
             g = n.getComponent(Gem)!;
@@ -672,6 +1201,10 @@ export class GameRoot extends Component {
                     const dmg = b.damage;
                     this.recycleBullet(b);
                     this.dealDamage(e, dmg);
+                    // 冰冻弹：命中附带减速
+                    if (!e.dead && this.stats.freeze > 0) {
+                        e.applySlow(0.7 - 0.12 * (this.stats.freeze - 1), 1.4);
+                    }
                     break;
                 }
             }
@@ -706,7 +1239,7 @@ export class GameRoot extends Component {
             const dy = bp.y - pp.y;
             if (dx * dx + dy * dy < 40 * 40) {
                 this.recycleBullet(b);
-                this.playerNode.getComponent(Player)!.takeDamage(1);
+                this.playerNode.getComponent(Player)!.takeDamage(this.enemyHitDamage());
             }
         }
 
@@ -719,24 +1252,37 @@ export class GameRoot extends Component {
             const dx = pp.x - ep.x;
             const dy = pp.y - ep.y;
             if (dx * dx + dy * dy < r * r) {
-                this.playerNode.getComponent(Player)!.takeDamage(1);
+                this.playerNode.getComponent(Player)!.takeDamage(this.enemyHitDamage());
                 break;
             }
         }
     }
 
-    // ---------------- 经验与升级 ----------------
+    // ---------------- 经验 / 金币 / 升级 / 商店 ----------------
 
     public addXp(amount: number) {
-        if (amount <= 0) return;
+        if (this.mode === 'waves' || amount <= 0) return; // 波次模式成长全靠金币
         const boost = this.effectXp2 > 0 ? 2 : 1;
         this.xp += amount * this.stats.xpGain * boost;
         SoundFX.I.pick();
         while (this.xp >= this.xpToNext) {
             this.xp -= this.xpToNext;
             this.level += 1;
-            this.xpToNext = 5 + this.level * 3;
+            // 后期经验曲线变陡（平方项），拖住升级速度避免数值无限膨胀
+            this.xpToNext = 5 + this.level * 3 + Math.floor(this.level * this.level * 0.15);
             this.pendingLevelUps += 1;
+            if (this.level >= 10) { this.tryUnlock('veteran'); }
+        }
+    }
+
+    /** 金币入账（picked=true 计入拾取成就） */
+    public addGold(n: number, picked = true) {
+        if (n <= 0) return;
+        this.gold += n;
+        if (picked) {
+            this.runGoldPicked += n;
+            SoundFX.I.gold();
+            if (this.runGoldPicked >= 100) { this.tryUnlock('tycoon'); }
         }
     }
 
@@ -752,21 +1298,108 @@ export class GameRoot extends Component {
         }
     }
 
+    /** 波次结束：发波次奖励金币并进商店 */
+    private endWave() {
+        const bonus = 18 + this.wave * 4;
+        this.addGold(bonus, false);
+        this.spawnFloatText(this.playerNode.position.x, this.playerNode.position.y + 80, `波次奖励 +${bonus} 金`, new Color(251, 191, 36), 24);
+        this.state = 'shop';
+        this.shopRerolls = 0;
+        this.refreshShop();
+        SoundFX.I.levelup();
+    }
+
+    private refreshShop() {
+        this.shopOffers = rollUpgrades(this.stats, 4);
+        this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
+    }
+
+    private rerollCost(): number { return 8 + this.shopRerolls * 4; }
+
+    /** 商店购买 */
+    public buyShopOffer(index: number): boolean {
+        if (this.state !== 'shop') return false;
+        const up = this.shopOffers[index];
+        if (!up) return false;
+        const price = up.price ?? 25;
+        if (this.gold < price) { SoundFX.I.hurt(); return false; }
+        this.gold -= price;
+        up.apply(this.stats);
+        this.shopOffers[index] = null as any;
+        this.overlays.updateShop(this.shopOffers, this.gold);
+        SoundFX.I.buy();
+        return true;
+    }
+
+    /** 商店刷新货架 */
+    public rerollShop() {
+        if (this.state !== 'shop') return;
+        const cost = this.rerollCost();
+        if (this.gold < cost) { SoundFX.I.hurt(); return; }
+        this.gold -= cost;
+        this.shopRerolls += 1;
+        this.refreshShop();
+        SoundFX.I.pick();
+    }
+
+    /** 开始下一波 */
+    public nextWave() {
+        if (this.state !== 'shop') return;
+        this.wave += 1;
+        this.waveTime = Math.min(24 + this.wave * 2, 40);
+        this.overlays.hideAll();
+        this.state = 'playing';
+        SoundFX.I.pick();
+    }
+
+    /** 冲刺计数（Player 调用） */
+    public onDash() {
+        this.runDashes += 1;
+        if (this.runDashes >= 30) { this.tryUnlock('dasher'); }
+    }
+
+    /** 成就解锁：新解锁时弹 toast */
+    public tryUnlock(id: string) {
+        if (MetaSave.unlock(id)) {
+            const def = MetaSave.ACHIEVEMENTS.find(a => a.id === id);
+            if (def) {
+                this.overlays.toast(`成就解锁：${def.name}`);
+                SoundFX.I.achieve();
+            }
+        }
+    }
+
     // ---------------- 死亡与重开 ----------------
 
     public onPlayerDead() {
         this.state = 'gameover';
         SoundFX.I.boom(true);
+
+        // 结算数据核心
+        const cores = Math.floor(this.kills / 10) + this.level + Math.floor(this.elapsed / 60)
+            + (this.mode === 'waves' ? this.wave * 2 : 0);
+        this.lastCoresEarned = cores;
+        MetaSave.addCores(cores);
+
+        // 每日挑战：记录当日最佳
+        this.lastDailyRecord = false;
+        if (this.mode === 'daily') {
+            this.lastDailyRecord = MetaSave.setDailyBest(MetaSave.todayKey(), Math.floor(this.elapsed));
+        }
+
         this.scheduleOnce(() => {
             this.overlays.showGameOver(this.elapsed, this.level, this.kills);
         }, 0.7);
     }
 
-    public restart() {
+    /** 清空场上所有实体与效果（重开 / 回菜单共用） */
+    private clearWorld() {
         for (const b of this.bullets.slice()) { this.recycleBullet(b); }
         for (const m of this.missiles.slice()) { this.recycleMissile(m); }
         for (const e of this.enemys.slice()) { this.recycleEnemy(e); }
         for (const g of this.gems.slice()) { this.recycleGem(g); }
+        for (const bh of this.blackholes) { bh.node.destroy(); }
+        this.blackholes.length = 0;
         for (const b of this.bulletPool) { b.node.active = false; }
         for (const m of this.missilePool) { m.node.active = false; }
         for (const u of this.powerPool) { u.node.active = false; }
@@ -780,6 +1413,10 @@ export class GameRoot extends Component {
         this.effectRage = 0;
         this.effectXp2 = 0;
         this.effectInvinc = 0;
+    }
+
+    public restart() {
+        this.clearWorld();
 
         this.stats = createBaseStats();
         this.level = 1;
@@ -791,7 +1428,23 @@ export class GameRoot extends Component {
         this.spawnTimer = 0.5;
         this.eliteTimer = 15;
         this.bossTimer = 45;
+        this.turretTimer = 55;
         this.boss = null;
+        this.lastThreat = -1;
+        this.gold = 0;
+        this.runDashes = 0;
+        this.runGoldPicked = 0;
+        this.runEliteKills = 0;
+
+        if (this.mode === 'waves') {
+            this.wave = 1;
+            this.waveTime = Math.min(24 + this.wave * 2, 40);
+            this.waveBossDone = 0;
+            this.gold = 30 * MetaSave.metaLevel('startGold');   // 战备资金
+        } else {
+            this.wave = 0;
+            this.waveTime = 0;
+        }
 
         this.playerNode.getComponent(Player)!.resetState();
         this.overlays.hideAll();

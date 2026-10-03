@@ -1,5 +1,6 @@
 import { _decorator, Component, Node, Color, Graphics, Label, UITransform } from 'cc';
 import { GameRoot } from './GameRoot';
+import { Player } from './Player';
 const { ccclass } = _decorator;
 
 interface BuffChip {
@@ -8,16 +9,20 @@ interface BuffChip {
     box: Graphics;
 }
 
-/** HUD：血条 / 经验条 / 等级 / 时间 / 击杀数 / 道具状态栏 */
+/** HUD：血条 / 经验条 / 等级 / 时间 / 击杀数 / 金币·波次 / 道具状态栏（含冲刺冷却） */
 @ccclass('Hud')
 export class Hud extends Component {
     private hpFill: Graphics = null!;
     private hpLabel: Label = null!;
     private xpFill: Node = null!;
+    private xpBarBg: Node = null!;
     private lvLabel: Label = null!;
     private timeLabel: Label = null!;
     private killLabel: Label = null!;
     private atkLabel: Label = null!;
+    private modeTag: Label = null!;
+    private threatLabel: Label = null!;
+    private waveLabel: Label = null!;
     private bossRoot: Node = null!;
     private bossFill: Node = null!;
     private buffChips: Map<string, BuffChip> = new Map();
@@ -32,6 +37,7 @@ export class Hud extends Component {
         xp2: { char: '倍', color: new Color(251, 191, 36) },
         invinc: { char: '无', color: new Color(255, 223, 128) },
         shield: { char: '盾', color: new Color(148, 163, 184) },
+        dash: { char: '冲', color: new Color(125, 211, 252) },
     };
 
     private makeLabel(parent: Node, size: number, color: Color, x: number, y: number, anchorX = 0.5): Label {
@@ -89,10 +95,11 @@ export class Hud extends Component {
         // 等级
         this.lvLabel = this.makeLabel(root, 22, new Color(255, 224, 130), left + 2, top - 78, 0);
 
-        // 经验条（全宽）
+        // 经验条（全宽，波次模式隐藏）
         this.xpBarW = half.x * 2;
         const xpBar = this.makeBar(root, this.xpBarW, 8, new Color(0, 0, 0, 100), new Color(79, 195, 247), -half.x, top - 100);
         this.xpFill = xpBar.fill;
+        this.xpBarBg = xpBar.bg;
 
         // 右上角时间与击杀
         const right = half.x - 16;
@@ -100,10 +107,17 @@ export class Hud extends Component {
         this.killLabel = this.makeLabel(root, 18, new Color(255, 170, 170), right, top - 68, 1);
         // 攻击力
         this.atkLabel = this.makeLabel(root, 18, new Color(255, 152, 118), right, top - 96, 1);
+        // 模式标签：波次=金币，每日=每日挑战，无尽不显示
+        this.modeTag = this.makeLabel(root, 20, new Color(251, 191, 36), right, top - 126, 1);
+        // 威胁等级（等级 1 起显示，颜色逐级升级）
+        this.threatLabel = this.makeLabel(root, 18, new Color(250, 200, 60), right, top - 154, 1);
+
+        // 波次号（顶部中央，仅波次模式）
+        this.waveLabel = this.makeLabel(root, 22, new Color(167, 243, 208), 0, top - 122);
 
         // Boss 血条（顶部中央，默认隐藏）
         this.bossRoot = new Node('BossBar');
-        this.bossRoot.setPosition(0, top - 150, 0);
+        this.bossRoot.setPosition(0, top - 160, 0);
         root.addChild(this.bossRoot);
         this.makeLabel(this.bossRoot, 18, new Color(255, 120, 120), 0, 22, 'BOSS');
         const bossBar = this.makeBar(this.bossRoot, 480, 16, new Color(0, 0, 0, 120), new Color(224, 85, 110), -240, 0);
@@ -112,7 +126,7 @@ export class Hud extends Component {
 
         // 道具状态栏（经验条下方，图标块 + 剩余时间条）
         this.buffRow = new Node('BuffRow');
-        this.buffRow.setPosition(left + 20, top - 128, 0);
+        this.buffRow.setPosition(left + 20, top - 148, 0);
         root.addChild(this.buffRow);
 
         // 按 GameRoot 当前状态决定初始显隐
@@ -179,6 +193,12 @@ export class Hud extends Component {
             const frac = ready ? 1 : Math.min(Math.max(1 - root.stats.shieldTimer / GameRoot.EFFECT_DURATION.shieldRecharge, 0), 1);
             wanted.push({ key: 'shield', frac });
         }
+        // 冲刺冷却：就绪满条，冷却时显示充能进度
+        const player = root.playerNode.getComponent(Player);
+        if (player) {
+            const frac = 1 - Math.max(player.dashCdT, 0) / root.stats.dashCd;
+            wanted.push({ key: 'dash', frac: Math.min(frac, 1) });
+        }
 
         // 删除不再生效的
         for (const [key, chip] of this.buffChips) {
@@ -209,15 +229,44 @@ export class Hud extends Component {
         this.hpFill.node.setScale(Math.max(s.hp / s.maxHp, 0.001), 1, 1);
         this.hpLabel.string = `HP ${s.hp}/${s.maxHp}`;
         this.lvLabel.string = `Lv.${root.level}`;
-        this.xpFill.setScale(Math.min(root.xp / root.xpToNext, 1), 1, 1);
 
-        const sec = Math.floor(root.elapsed);
+        // 波次模式：无经验条，改显波次倒计时；其余模式正常显示经验
+        const waves = root.mode === 'waves';
+        this.xpBarBg.active = !waves;
+        this.xpFill.active = !waves;
+        if (!waves) {
+            this.xpFill.setScale(Math.min(root.xp / root.xpToNext, 1), 1, 1);
+        }
+
+        let sec: number;
+        if (waves) {
+            sec = Math.max(0, Math.ceil(root.waveTime));
+            this.waveLabel.string = `第 ${root.wave} 波`;
+            this.modeTag.string = `◆ ${root.gold}`;
+        } else {
+            sec = Math.floor(root.elapsed);
+            this.waveLabel.string = '';
+            this.modeTag.string = root.mode === 'daily' ? '每日挑战' : '';
+        }
         const mm = String(Math.floor(sec / 60)).padStart(2, '0');
         const ss = String(sec % 60).padStart(2, '0');
         this.timeLabel.string = `${mm}:${ss}`;
         this.killLabel.string = `击杀 ${root.kills}`;
         // 攻击力
         this.atkLabel.string = `攻 ${s.damage}`;
+
+        // 威胁等级：绿黄→橙→红→紫逐级告警
+        const threat = root.threatLevel();
+        if (threat > 0) {
+            this.threatLabel.string = `威胁 Lv.${threat}`;
+            this.threatLabel.color = threat >= 12
+                ? new Color(216, 110, 255)
+                : threat >= 8 ? new Color(248, 100, 100)
+                    : threat >= 4 ? new Color(251, 146, 60)
+                        : new Color(250, 200, 60);
+        } else {
+            this.threatLabel.string = '';
+        }
 
         // Boss 血条
         const boss = root.boss;
