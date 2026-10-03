@@ -32,6 +32,7 @@ let Bullet = class Bullet extends Component {
         this.vy = 600;
         this.damage = 1;
         this.hostile = false;
+        this.styled = null; // 当前已绘制样式
     }
     /**
      * @param angle 发射角度（弧度），0 表示正上方
@@ -44,8 +45,11 @@ let Bullet = class Bullet extends Component {
         this.node.active = true;
         this.setStyle(hostile ? 'enemy' : 'player');
     }
-    /** 按阵营绘制外观（对象池复用时会重绘） */
+    /** 按阵营绘制外观（同阵营复用时不重绘） */
     setStyle(style) {
+        if (this.styled === style)
+            return;
+        this.styled = style;
         const g = this.node.getComponent(Graphics);
         if (!g)
             return;
@@ -166,6 +170,7 @@ let Enemy = class Enemy extends Component {
         this.turretAngle = 0; // 炮台炮管朝向（0=正上方）
         this.enrageT = 25; // Boss 狂暴倒计时
         this.enraged = false; // Boss 是否已狂暴
+        this.builtKey = ''; // 已绘制外观的键（种类|词条）
         this.shapeNode = null;
         this.hpBarNode = null;
         this.hpFill = null;
@@ -277,8 +282,25 @@ let Enemy = class Enemy extends Component {
             this.vy = dy / dist * this.speed;
         }
     }
-    /** 几何造型（对象池复用时重绘） */
+    /** 几何造型（外观只由 种类|词条 决定，池化复用键未变时跳过 Graphics 重建） */
     buildVisual() {
+        const visKey = this.kind + '|' + this.affix;
+        if (visKey === this.builtKey) {
+            // 复用同款外观：只复位动态状态
+            if (this.hpBarNode) {
+                this.hpBarNode.setScale(1, 1, 1);
+                this.hpFill.setScale(1, 1, 1);
+                this.hpBarNode.active = false;
+            }
+            if (this.iceNode) {
+                this.iceNode.active = false;
+            }
+            if (this.affixNode) {
+                this.affixNode.active = this.affix !== '';
+            }
+            return;
+        }
+        this.builtKey = visKey;
         if (!this.shapeNode) {
             this.shapeNode = new Node('shape');
             this.node.addChild(this.shapeNode);
@@ -836,7 +858,7 @@ Enemy = __decorate([
   };
 });
 System.register("chunks:///_virtual/GameRoot.ts", ['cc', './Upgrades.ts', './MetaSave.ts', './Player.ts', './Enemy.ts', './Bullet.ts', './Missile.ts', './Gem.ts', './PowerUp.ts', './Hud.ts', './Overlays.ts', './SoundFX.ts'], function (exports) {
-  var _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, KeyCode, tween, Mask, createBaseStats, rollUpgrades, MetaSave, Player, Enemy, Bullet, Missile, Gem, PowerUp, Hud, Overlays, SoundFX;
+  var _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, KeyCode, tween, Tween, Mask, createBaseStats, rollUpgrades, MetaSave, Player, Enemy, Bullet, Missile, Gem, PowerUp, Hud, Overlays, SoundFX;
   return {
     setters: [function (module) {
       _decorator = module._decorator;
@@ -854,6 +876,7 @@ System.register("chunks:///_virtual/GameRoot.ts", ['cc', './Upgrades.ts', './Met
       Input = module.Input;
       KeyCode = module.KeyCode;
       tween = module.tween;
+      Tween = module.Tween;
       Mask = module.Mask;
       cclegacy = module.cclegacy;
     }, function (module) {
@@ -958,6 +981,10 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.powerPool = [];
         this.enemyPool = [];
         this.gemPool = [];
+        this.floatPool = [];
+        this.floatActive = [];
+        this.hostileBullets = 0; // 场上敌方光球数（性能熔断用）
+        this.fxLive = 0; // 存活中的短命特效数（弧/环/束）
         this.worldLayer = null;
         this.stars = [];
         this.nebulae = [];
@@ -1461,8 +1488,12 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
             m.node.setPosition(pos.x + dx, pos.y - 8, 0);
         }
     }
-    /** 敌方光球（威胁等级提升弹速） */
+    /** 敌方光球（威胁等级提升弹速；总量熔断防极端弹幕堆积） */
     spawnEnemyBullet(x, y, angle, speed) {
+        if (this.hostileBullets >= 280) {
+            return;
+        }
+        this.hostileBullets += 1;
         const b = this.getBullet();
         b.node.setPosition(x, y, 0);
         const mul = 1 + 0.04 * Math.min(this.threatLevel(), 15);
@@ -1627,8 +1658,12 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         }
         SoundFX.I.chain();
     }
-    /** 闪电弧视觉：抖动折线，快速淡出 */
+    /** 闪电弧视觉：抖动折线，快速淡出（受特效并发预算约束） */
     spawnLightningArc(a, b) {
+        if (this.fxLive >= 40) {
+            return;
+        }
+        this.fxLive += 1;
         const n = new Node('lightning');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -1649,7 +1684,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         g.stroke();
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
-        tween(op).to(0.22, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.22, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
     /** 镭射：以战机为中心向上齐射，等级数 = 光束道数，贯穿全部敌机 */
     fireLaser() {
@@ -1681,8 +1716,12 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         }
         SoundFX.I.laser();
     }
-    /** 单道镭射视觉：三层光带 + 收拢淡出 */
+    /** 单道镭射视觉：三层光带 + 收拢淡出（受特效并发预算约束） */
     spawnLaserBeam(x, y0, halfW, top) {
+        if (this.fxLive >= 40) {
+            return;
+        }
+        this.fxLive += 1;
         const n = new Node('laser');
         n.addComponent(UITransform).setContentSize(10, 10);
         n.setPosition(x, 0, 0);
@@ -1699,7 +1738,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
         tween(n).to(0.24, { scale: new Vec3(0.05, 1, 1) }).start();
-        tween(op).to(0.24, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.24, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
     /** 黑洞弹：在敌群密集处生成黑洞 */
     spawnBlackhole() {
@@ -1801,8 +1840,12 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
             }
         }
     }
-    /** 扩散圆环特效 */
+    /** 扩散圆环特效（受特效并发预算约束） */
     spawnRingFx(x, y, radius, color, lineWidth, dur) {
+        if (this.fxLive >= 40) {
+            return;
+        }
+        this.fxLive += 1;
         const n = new Node('ring-fx');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -1815,10 +1858,14 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.worldLayer.addChild(n);
         tween(n).to(dur, { scale: new Vec3(1, 1, 1) }).start();
         const op = n.addComponent(UIOpacity);
-        tween(op).to(dur, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(dur, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
-    /** 闪光圆特效（自爆等） */
+    /** 闪光圆特效（自爆等，受特效并发预算约束） */
     spawnFlashFx(x, y, radius, color) {
+        if (this.fxLive >= 40) {
+            return;
+        }
+        this.fxLive += 1;
         const n = new Node('flash-fx');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -1829,22 +1876,49 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
         tween(n).to(0.3, { scale: new Vec3(1.5, 1.5, 1) }).start();
-        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
-    /** 击杀反馈飘字（上飘 + 淡出后销毁），size 可调以区分暴击 */
+    /** 击杀/伤害反馈飘字（对象池复用，上飘 + 淡出），size 可调以区分暴击 */
     spawnFloatText(x, y, str, color, size = 24) {
-        const n = new Node('float-text');
-        n.addComponent(UITransform).setContentSize(80, 40);
-        const l = n.addComponent(Label);
-        l.string = str;
-        l.fontSize = size;
-        l.lineHeight = size + 4;
-        l.color = color;
-        n.setPosition(x, y, 0);
-        this.worldLayer.addChild(n);
-        tween(n).by(0.7, { position: new Vec3(0, 48, 0) }).start();
-        const op = n.addComponent(UIOpacity);
-        tween(op).delay(0.3).to(0.4, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        // 满员：小号数字（普通伤害/治疗）直接丢弃；大号文字（暴击/道具播报）顶掉最旧的小字
+        if (this.floatActive.length >= GameRoot_1.FLOAT_CAP) {
+            const idx = this.floatActive.findIndex(f => f.label.fontSize < 24);
+            if (size < 24 || idx < 0) {
+                return;
+            }
+            this.recycleFloat(this.floatActive[idx], true);
+        }
+        let it = this.floatPool.pop();
+        if (!it) {
+            const n = new Node('float-text');
+            n.addComponent(UITransform).setContentSize(80, 40);
+            const l = n.addComponent(Label);
+            it = { node: n, label: l, op: n.addComponent(UIOpacity) };
+            this.worldLayer.addChild(n);
+        }
+        it.node.active = true;
+        it.label.string = str;
+        it.label.fontSize = size;
+        it.label.lineHeight = size + 4;
+        it.label.color = color;
+        it.node.setPosition(x, y, 0);
+        it.op.opacity = 255;
+        this.floatActive.push(it);
+        tween(it.node).by(0.7, { position: new Vec3(0, 48, 0) }).start();
+        tween(it.op).delay(0.3).to(0.4, { opacity: 0 }).call(() => this.recycleFloat(it, false)).start();
+    }
+    recycleFloat(it, forced) {
+        const i = this.floatActive.indexOf(it);
+        if (i < 0)
+            return;
+        this.floatActive.splice(i, 1);
+        if (forced) {
+            // 被顶掉时动画未必走完，先停掉残留 tween 再回池
+            Tween.stopAllByTarget(it.node);
+            Tween.stopAllByTarget(it.op);
+        }
+        it.node.active = false;
+        this.floatPool.push(it);
     }
     // ---------------- 子弹与宝石 ----------------
     getBullet() {
@@ -1866,6 +1940,9 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         const i = this.bullets.indexOf(b);
         if (i >= 0) {
             this.bullets.splice(i, 1);
+        }
+        if (b.hostile) {
+            this.hostileBullets = Math.max(0, this.hostileBullets - 1);
         }
         b.node.active = false;
         this.bulletPool.push(b);
@@ -2321,10 +2398,14 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         for (const g of this.gemPool) {
             g.node.active = false;
         }
+        for (const f of this.floatActive.slice()) {
+            this.recycleFloat(f, true);
+        }
         this.enemys.length = 0;
         this.bullets.length = 0;
         this.missiles.length = 0;
         this.gems.length = 0;
+        this.hostileBullets = 0;
         this.effectMagnet = 0;
         this.effectRage = 0;
         this.effectXp2 = 0;
@@ -2367,6 +2448,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
 GameRoot.I = null;
 /** 道具效果持续时长（秒），Hud 状态栏与效果计时共用 */
 GameRoot.EFFECT_DURATION = { magnet: 6, rage: 8, xp2: 10, shieldRecharge: 12, invinc: 5, freezeField: 2.5 };
+GameRoot.FLOAT_CAP = 26; // 同屏飘字上限
 GameRoot = GameRoot_1 = __decorate([
     ccclass('GameRoot'),
     executionOrder(-1000)
@@ -2411,6 +2493,7 @@ let Gem = class Gem extends Component {
         this.value = 1;
         this.gold = false; // true=金币（波次模式） false=经验宝石
         this.attract = false; // 被"吸"道具标记：无视距离强制飞向玩家
+        this.styled = null; // 当前已绘制类型（true=金币）
     }
     init(x, y, value, gold = false) {
         this.value = value;
@@ -2430,8 +2513,11 @@ let Gem = class Gem extends Component {
         this.node.setScale(sc, sc, 1);
         this.setStyle();
     }
-    /** 按类型重绘（对象池复用时金币/宝石互相切换） */
+    /** 按类型重绘（同类型复用时不重绘） */
     setStyle() {
+        if (this.styled === this.gold)
+            return;
+        this.styled = this.gold;
         const g = this.node.getComponent(Graphics) || this.node.addComponent(Graphics);
         if (!g)
             return;
@@ -2774,11 +2860,10 @@ let Hud = Hud_1 = class Hud extends Component {
         const threat = root.threatLevel();
         if (threat > 0) {
             this.threatLabel.string = `威胁 Lv.${threat}`;
-            this.threatLabel.color = threat >= 12
-                ? new Color(216, 110, 255)
-                : threat >= 8 ? new Color(248, 100, 100)
-                    : threat >= 4 ? new Color(251, 146, 60)
-                        : new Color(250, 200, 60);
+            this.threatLabel.color = threat >= 12 ? Hud_1.THREAT_COLOR_L12
+                : threat >= 8 ? Hud_1.THREAT_COLOR_L8
+                    : threat >= 4 ? Hud_1.THREAT_COLOR_L4
+                        : Hud_1.THREAT_COLOR_L1;
         }
         else {
             this.threatLabel.string = '';
@@ -2802,6 +2887,10 @@ Hud.BUFF_STYLE = {
     shield: { char: '盾', color: new Color(148, 163, 184) },
     dash: { char: '冲', color: new Color(125, 211, 252) },
 };
+Hud.THREAT_COLOR_L1 = new Color(250, 200, 60);
+Hud.THREAT_COLOR_L4 = new Color(251, 146, 60);
+Hud.THREAT_COLOR_L8 = new Color(248, 100, 100);
+Hud.THREAT_COLOR_L12 = new Color(216, 110, 255);
 Hud = Hud_1 = __decorate([
     ccclass('Hud')
 ], Hud);
@@ -2860,6 +2949,7 @@ let Missile = class Missile extends Component {
         this.speed = BASE_SPEED;
         this.life = LIFETIME;
         this.target = null;
+        this.drawn = false; // 外观无变化，池化复用不重绘
     }
     init(target, damage, initialAngle) {
         this.target = target;
@@ -2872,6 +2962,9 @@ let Missile = class Missile extends Component {
         this.draw();
     }
     draw() {
+        if (this.drawn)
+            return;
+        this.drawn = true;
         const g = this.node.getComponent(Graphics) || this.node.addComponent(Graphics);
         g.clear();
         g.fillColor = new Color(251, 146, 60, 70);

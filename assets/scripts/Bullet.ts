@@ -12,6 +12,7 @@ export class Bullet extends Component {
     public vy = 600;
     public damage = 1;
     public hostile = false;
+    private styled: 'player' | 'enemy' | null = null;   // 当前已绘制样式
 
     /**
      * @param angle 发射角度（弧度），0 表示正上方
@@ -25,8 +26,10 @@ export class Bullet extends Component {
         this.setStyle(hostile ? 'enemy' : 'player');
     }
 
-    /** 按阵营绘制外观（对象池复用时会重绘） */
+    /** 按阵营绘制外观（同阵营复用时不重绘） */
     public setStyle(style: 'player' | 'enemy') {
+        if (this.styled === style) return;
+        this.styled = style;
         const g = this.node.getComponent(Graphics);
         if (!g) return;
         g.clear();

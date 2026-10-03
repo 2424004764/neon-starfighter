@@ -21,6 +21,7 @@ export class Missile extends Component {
     private speed = BASE_SPEED;
     private life = LIFETIME;
     private target: Enemy | null = null;
+    private drawn = false;     // 外观无变化，池化复用不重绘
 
     public init(target: Enemy | null, damage: number, initialAngle: number) {
         this.target = target;
@@ -34,6 +35,8 @@ export class Missile extends Component {
     }
 
     private draw() {
+        if (this.drawn) return;
+        this.drawn = true;
         const g = this.node.getComponent(Graphics) || this.node.addComponent(Graphics);
         g.clear();
         g.fillColor = new Color(251, 146, 60, 70);

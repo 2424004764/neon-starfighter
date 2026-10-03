@@ -56,6 +56,7 @@ export class Enemy extends Component {
     private turretAngle = 0;   // 炮台炮管朝向（0=正上方）
     private enrageT = 25;      // Boss 狂暴倒计时
     private enraged = false;   // Boss 是否已狂暴
+    private builtKey = '';     // 已绘制外观的键（种类|词条）
     private shapeNode: Node = null!;
     private hpBarNode: Node = null!;
     private hpFill: Node = null!;
@@ -168,8 +169,21 @@ export class Enemy extends Component {
         }
     }
 
-    /** 几何造型（对象池复用时重绘） */
+    /** 几何造型（外观只由 种类|词条 决定，池化复用键未变时跳过 Graphics 重建） */
     private buildVisual() {
+        const visKey = this.kind + '|' + this.affix;
+        if (visKey === this.builtKey) {
+            // 复用同款外观：只复位动态状态
+            if (this.hpBarNode) {
+                this.hpBarNode.setScale(1, 1, 1);
+                this.hpFill.setScale(1, 1, 1);
+                this.hpBarNode.active = false;
+            }
+            if (this.iceNode) { this.iceNode.active = false; }
+            if (this.affixNode) { this.affixNode.active = this.affix !== ''; }
+            return;
+        }
+        this.builtKey = visKey;
         if (!this.shapeNode) {
             this.shapeNode = new Node('shape');
             this.node.addChild(this.shapeNode);

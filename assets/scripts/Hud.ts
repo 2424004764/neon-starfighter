@@ -40,6 +40,11 @@ export class Hud extends Component {
         dash: { char: '冲', color: new Color(125, 211, 252) },
     };
 
+    private static THREAT_COLOR_L1 = new Color(250, 200, 60);
+    private static THREAT_COLOR_L4 = new Color(251, 146, 60);
+    private static THREAT_COLOR_L8 = new Color(248, 100, 100);
+    private static THREAT_COLOR_L12 = new Color(216, 110, 255);
+
     private makeLabel(parent: Node, size: number, color: Color, x: number, y: number, anchorX = 0.5): Label {
         const n = new Node('label');
         const uiT = n.addComponent(UITransform);
@@ -259,11 +264,10 @@ export class Hud extends Component {
         const threat = root.threatLevel();
         if (threat > 0) {
             this.threatLabel.string = `威胁 Lv.${threat}`;
-            this.threatLabel.color = threat >= 12
-                ? new Color(216, 110, 255)
-                : threat >= 8 ? new Color(248, 100, 100)
-                    : threat >= 4 ? new Color(251, 146, 60)
-                        : new Color(250, 200, 60);
+            this.threatLabel.color = threat >= 12 ? Hud.THREAT_COLOR_L12
+                : threat >= 8 ? Hud.THREAT_COLOR_L8
+                    : threat >= 4 ? Hud.THREAT_COLOR_L4
+                        : Hud.THREAT_COLOR_L1;
         } else {
             this.threatLabel.string = '';
         }

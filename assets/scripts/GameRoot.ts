@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, EventKeyboard, KeyCode, tween, Mask } from 'cc';
+import { _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, EventKeyboard, KeyCode, tween, Tween, Mask } from 'cc';
 import { Stats, createBaseStats, rollUpgrades, Upgrade } from './Upgrades';
 import * as MetaSave from './MetaSave';
 import { Player } from './Player';
@@ -15,6 +15,9 @@ const { ccclass, executionOrder } = _decorator;
 export type GameMode = 'endless' | 'waves' | 'daily';
 
 interface Blackhole { node: Node; ring: Node; life: number; dmgTick: number; level: number; }
+
+/** 复用型飘字（伤害数字是后期最大节点开销，必须走对象池） */
+interface FloatItem { node: Node; label: Label; op: UIOpacity; }
 
 /**
  * 《霓虹深空》主控：状态机 / 刷怪 / 碰撞 / 经验升级 / 对象池 / 模式与结算
@@ -84,6 +87,11 @@ export class GameRoot extends Component {
     private powerPool: PowerUp[] = [];
     private enemyPool: Enemy[] = [];
     private gemPool: Gem[] = [];
+    private floatPool: FloatItem[] = [];
+    private floatActive: FloatItem[] = [];
+    private static readonly FLOAT_CAP = 26;   // 同屏飘字上限
+    private hostileBullets = 0;               // 场上敌方光球数（性能熔断用）
+    private fxLive = 0;                       // 存活中的短命特效数（弧/环/束）
     private worldLayer: Node = null!;
     private stars: { node: Node; speed: number; op: UIOpacity; maxOp: number; twFreq: number; twPhase: number }[] = [];
     private nebulae: { node: Node; speed: number; op: UIOpacity; baseX: number; swayAmp: number; swayFreq: number; pulseFreq: number; phase: number }[] = [];
@@ -591,8 +599,10 @@ export class GameRoot extends Component {
         }
     }
 
-    /** 敌方光球（威胁等级提升弹速） */
+    /** 敌方光球（威胁等级提升弹速；总量熔断防极端弹幕堆积） */
     public spawnEnemyBullet(x: number, y: number, angle: number, speed: number) {
+        if (this.hostileBullets >= 280) { return; }
+        this.hostileBullets += 1;
         const b = this.getBullet();
         b.node.setPosition(x, y, 0);
         const mul = 1 + 0.04 * Math.min(this.threatLevel(), 15);
@@ -744,8 +754,10 @@ export class GameRoot extends Component {
         SoundFX.I.chain();
     }
 
-    /** 闪电弧视觉：抖动折线，快速淡出 */
+    /** 闪电弧视觉：抖动折线，快速淡出（受特效并发预算约束） */
     private spawnLightningArc(a: Vec3, b: Vec3) {
+        if (this.fxLive >= 40) { return; }
+        this.fxLive += 1;
         const n = new Node('lightning');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -766,7 +778,7 @@ export class GameRoot extends Component {
         g.stroke();
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
-        tween(op).to(0.22, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.22, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
 
     /** 镭射：以战机为中心向上齐射，等级数 = 光束道数，贯穿全部敌机 */
@@ -800,8 +812,10 @@ export class GameRoot extends Component {
         SoundFX.I.laser();
     }
 
-    /** 单道镭射视觉：三层光带 + 收拢淡出 */
+    /** 单道镭射视觉：三层光带 + 收拢淡出（受特效并发预算约束） */
     private spawnLaserBeam(x: number, y0: number, halfW: number, top: number) {
+        if (this.fxLive >= 40) { return; }
+        this.fxLive += 1;
         const n = new Node('laser');
         n.addComponent(UITransform).setContentSize(10, 10);
         n.setPosition(x, 0, 0);
@@ -818,7 +832,7 @@ export class GameRoot extends Component {
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
         tween(n).to(0.24, { scale: new Vec3(0.05, 1, 1) }).start();
-        tween(op).to(0.24, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.24, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
 
     /** 黑洞弹：在敌群密集处生成黑洞 */
@@ -915,8 +929,10 @@ export class GameRoot extends Component {
         }
     }
 
-    /** 扩散圆环特效 */
+    /** 扩散圆环特效（受特效并发预算约束） */
     public spawnRingFx(x: number, y: number, radius: number, color: Color, lineWidth: number, dur: number) {
+        if (this.fxLive >= 40) { return; }
+        this.fxLive += 1;
         const n = new Node('ring-fx');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -929,11 +945,13 @@ export class GameRoot extends Component {
         this.worldLayer.addChild(n);
         tween(n).to(dur, { scale: new Vec3(1, 1, 1) }).start();
         const op = n.addComponent(UIOpacity);
-        tween(op).to(dur, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(dur, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
 
-    /** 闪光圆特效（自爆等） */
+    /** 闪光圆特效（自爆等，受特效并发预算约束） */
     private spawnFlashFx(x: number, y: number, radius: number, color: Color) {
+        if (this.fxLive >= 40) { return; }
+        this.fxLive += 1;
         const n = new Node('flash-fx');
         n.addComponent(UITransform).setContentSize(10, 10);
         const g = n.addComponent(Graphics);
@@ -944,23 +962,48 @@ export class GameRoot extends Component {
         this.worldLayer.addChild(n);
         const op = n.addComponent(UIOpacity);
         tween(n).to(0.3, { scale: new Vec3(1.5, 1.5, 1) }).start();
-        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        tween(op).to(0.3, { opacity: 0 }).call(() => { n.destroy(); this.fxLive = Math.max(0, this.fxLive - 1); }).start();
     }
 
-    /** 击杀反馈飘字（上飘 + 淡出后销毁），size 可调以区分暴击 */
+    /** 击杀/伤害反馈飘字（对象池复用，上飘 + 淡出），size 可调以区分暴击 */
     public spawnFloatText(x: number, y: number, str: string, color: Color, size = 24) {
-        const n = new Node('float-text');
-        n.addComponent(UITransform).setContentSize(80, 40);
-        const l = n.addComponent(Label);
-        l.string = str;
-        l.fontSize = size;
-        l.lineHeight = size + 4;
-        l.color = color;
-        n.setPosition(x, y, 0);
-        this.worldLayer.addChild(n);
-        tween(n).by(0.7, { position: new Vec3(0, 48, 0) }).start();
-        const op = n.addComponent(UIOpacity);
-        tween(op).delay(0.3).to(0.4, { opacity: 0 }).call(() => { n.destroy(); }).start();
+        // 满员：小号数字（普通伤害/治疗）直接丢弃；大号文字（暴击/道具播报）顶掉最旧的小字
+        if (this.floatActive.length >= GameRoot.FLOAT_CAP) {
+            const idx = this.floatActive.findIndex(f => f.label.fontSize < 24);
+            if (size < 24 || idx < 0) { return; }
+            this.recycleFloat(this.floatActive[idx], true);
+        }
+        let it = this.floatPool.pop();
+        if (!it) {
+            const n = new Node('float-text');
+            n.addComponent(UITransform).setContentSize(80, 40);
+            const l = n.addComponent(Label);
+            it = { node: n, label: l, op: n.addComponent(UIOpacity) };
+            this.worldLayer.addChild(n);
+        }
+        it.node.active = true;
+        it.label.string = str;
+        it.label.fontSize = size;
+        it.label.lineHeight = size + 4;
+        it.label.color = color;
+        it.node.setPosition(x, y, 0);
+        it.op.opacity = 255;
+        this.floatActive.push(it);
+        tween(it.node).by(0.7, { position: new Vec3(0, 48, 0) }).start();
+        tween(it.op).delay(0.3).to(0.4, { opacity: 0 }).call(() => this.recycleFloat(it, false)).start();
+    }
+
+    private recycleFloat(it: FloatItem, forced: boolean) {
+        const i = this.floatActive.indexOf(it);
+        if (i < 0) return;
+        this.floatActive.splice(i, 1);
+        if (forced) {
+            // 被顶掉时动画未必走完，先停掉残留 tween 再回池
+            Tween.stopAllByTarget(it.node);
+            Tween.stopAllByTarget(it.op);
+        }
+        it.node.active = false;
+        this.floatPool.push(it);
     }
 
     // ---------------- 子弹与宝石 ----------------
@@ -983,6 +1026,7 @@ export class GameRoot extends Component {
         if (this.bulletPool.indexOf(b) >= 0) return;
         const i = this.bullets.indexOf(b);
         if (i >= 0) { this.bullets.splice(i, 1); }
+        if (b.hostile) { this.hostileBullets = Math.max(0, this.hostileBullets - 1); }
         b.node.active = false;
         this.bulletPool.push(b);
     }
@@ -1405,10 +1449,12 @@ export class GameRoot extends Component {
         for (const u of this.powerPool) { u.node.active = false; }
         for (const e of this.enemyPool) { e.node.active = false; }
         for (const g of this.gemPool) { g.node.active = false; }
+        for (const f of this.floatActive.slice()) { this.recycleFloat(f, true); }
         this.enemys.length = 0;
         this.bullets.length = 0;
         this.missiles.length = 0;
         this.gems.length = 0;
+        this.hostileBullets = 0;
         this.effectMagnet = 0;
         this.effectRage = 0;
         this.effectXp2 = 0;
