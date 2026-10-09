@@ -64,10 +64,28 @@
 ## 🚀 本地开发
 
 1. 安装 [Cocos Dashboard](https://www.cocos.com/creator-download) 并通过其安装 Cocos Creator **3.8.8**
-2. 用 Dashboard 打开本项目文件夹
-3. 编辑器顶部 ▶ 预览；或直接双击 `启动游戏.bat` 运行已构建的网页版
+2. 用 Dashboard 打开本项目文件夹，编辑器顶部 ▶ 预览
 
-修改 `assets/scripts/` 下任意代码后，在编辑器中重新构建（项目 → 构建发布 → web-mobile）即可。
+### 本地启动命令（运行已构建的网页版）
+
+```bash
+# 方式一：Windows 一键启动（自动起服务器并打开浏览器，端口 7457）
+启动游戏.bat
+
+# 方式二：手动启动（仅需 Node.js，零依赖）
+node serve-game.js 7457        # 端口可省略，默认 8080；随后访问 http://localhost:7457/
+```
+
+- 服务器只做静态托管（根目录为 `build/web-mobile/`），带 `no-cache` 响应头，
+  重新构建后**刷新浏览器即可**，无需重启服务。
+- `serve-game.js` 中的根目录当前写死为本机绝对路径，换机器克隆后需改为相对路径或实际路径。
+
+修改 `assets/scripts/` 下任意代码后，在编辑器中重新构建（项目 → 构建发布 → web-mobile）即可；
+也可用命令行构建：
+
+```bash
+CocosCreator.exe --project <项目路径> --build "platform=web-mobile;debug=true;buildPath=build"
+```
 
 ## 🌐 GitHub Pages 部署
 
