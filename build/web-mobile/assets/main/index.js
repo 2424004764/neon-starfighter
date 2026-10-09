@@ -1336,7 +1336,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
     // ---------------- 刷怪 ----------------
     /** 波次模式的难度基准秒数（复用无尽模式的成长曲线，斜率放缓） */
     difficultySec() {
-        return this.mode === 'waves' ? 15 + this.wave * 12 : this.elapsed;
+        return this.mode === 'waves' ? 15 + this.wave * 10 : this.elapsed;
     }
     /** 威胁等级：无尽每 75 秒 +1，波次每 3 波 +1（商店成长靠金币、节奏慢，曲线放缓） */
     threatLevel() {
@@ -1433,7 +1433,7 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
     /** 波次模式刷怪：按波数解锁种类，上限与批次温和加码 */
     waveSpawnLogic(dt) {
         const threat = this.threatLevel();
-        const cap = Math.min(58, 24 + Math.floor(this.wave * 1.5));
+        const cap = Math.min(56, 22 + Math.floor(this.wave * 1.2));
         if (this.enemys.length < cap) {
             this.spawnTimer -= dt;
             if (this.spawnTimer <= 0) {
