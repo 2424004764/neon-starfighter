@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, EventKeyboard, KeyCode, tween, Tween, Mask } from 'cc';
+import { _decorator, Component, Node, Vec3, Color, Graphics, Label, UITransform, UIOpacity, view, ResolutionPolicy, input, Input, EventKeyboard, KeyCode, tween, Tween, Mask, game, Game } from 'cc';
 import { Stats, createBaseStats, rollUpgrades, Upgrade } from './Upgrades';
 import * as MetaSave from './MetaSave';
 import { Player } from './Player';
@@ -115,6 +115,11 @@ export class GameRoot extends Component {
             if (window.innerWidth > 0 && window.innerHeight > 0) {
                 view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
             }
+        });
+
+        // 切走（切标签页/切后台/最小化）时自动暂停战斗，切回后从暂停面板手动继续
+        game.on(Game.EVENT_HIDE, () => {
+            if (this.state === 'playing') { this.togglePause(); }
         });
 
         // 音效上下文（首次触摸后激活）
@@ -1398,10 +1403,18 @@ export class GameRoot extends Component {
         const exclude = keep.filter((u): u is Upgrade => !!u);
         const fresh = rollUpgrades(this.stats, 4, exclude);
         this.shopOffers = keep.map(up => up !== null ? up : (fresh.shift() ?? null));
-        this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
+        this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.nextRerollCost());
     }
 
     private rerollCost(): number { return 8 + this.shopRerolls * 4; }
+
+    /** 货架是否已全部买空 */
+    private allSold(): boolean {
+        return this.shopOffers.length > 0 && this.shopOffers.every(u => !u);
+    }
+
+    /** 下一次刷新的实际花费：全部买空时免费补货 */
+    public nextRerollCost(): number { return this.allSold() ? 0 : this.rerollCost(); }
 
     /** 商店购买 */
     public buyShopOffer(index: number): boolean {
@@ -1428,13 +1441,13 @@ export class GameRoot extends Component {
         SoundFX.I.pick();
     }
 
-    /** 商店刷新货架 */
+    /** 商店刷新货架（全部买空时免费补货，且不累计涨价） */
     public rerollShop() {
         if (this.state !== 'shop') return;
-        const cost = this.rerollCost();
+        const cost = this.nextRerollCost();
         if (this.gold < cost) { SoundFX.I.hurt(); return; }
         this.gold -= cost;
-        this.shopRerolls += 1;
+        if (cost > 0) { this.shopRerolls += 1; }
         this.refreshShop();
         SoundFX.I.pick();
     }

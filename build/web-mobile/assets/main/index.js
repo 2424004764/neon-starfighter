@@ -1011,6 +1011,10 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
                 view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
             }
         });
+        // 切走（切标签页/切后台/最小化）时自动暂停战斗，切回后从暂停面板手动继续
+        cclegacy.game.on(cclegacy.Game.EVENT_HIDE, () => {
+            if (this.state === 'playing') { this.togglePause(); }
+        });
         // 音效上下文（首次触摸后激活）
         SoundFX.I.init();
         input.on(Input.EventType.TOUCH_START, () => { SoundFX.I.init(); });
@@ -2333,9 +2337,15 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         const exclude = keep.filter((u) => !!u);
         const fresh = rollUpgrades(this.stats, 4, exclude);
         this.shopOffers = keep.map(up => { var _a; return up !== null ? up : ((_a = fresh.shift()) !== null && _a !== void 0 ? _a : null); });
-        this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.rerollCost());
+        this.overlays.showShop(this.shopOffers, this.gold, this.wave, this.nextRerollCost());
     }
     rerollCost() { return 8 + this.shopRerolls * 4; }
+    /** 货架是否已全部买空 */
+    allSold() {
+        return this.shopOffers.length > 0 && this.shopOffers.every(u => !u);
+    }
+    /** 下一次刷新的实际花费：全部买空时免费补货 */
+    nextRerollCost() { return this.allSold() ? 0 : this.rerollCost(); }
     /** 商店购买 */
     buyShopOffer(index) {
         var _a;
@@ -2367,17 +2377,19 @@ let GameRoot = GameRoot_1 = class GameRoot extends Component {
         this.overlays.updateShop(this.shopOffers, this.gold);
         SoundFX.I.pick();
     }
-    /** 商店刷新货架 */
+    /** 商店刷新货架（全部买空时免费补货，且不累计涨价） */
     rerollShop() {
         if (this.state !== 'shop')
             return;
-        const cost = this.rerollCost();
+        const cost = this.nextRerollCost();
         if (this.gold < cost) {
             SoundFX.I.hurt();
             return;
         }
         this.gold -= cost;
-        this.shopRerolls += 1;
+        if (cost > 0) {
+            this.shopRerolls += 1;
+        }
         this.refreshShop();
         SoundFX.I.pick();
     }
@@ -3397,7 +3409,12 @@ let Overlays = Overlays_1 = class Overlays extends Component {
         card.addChild(icon);
         this.makeLabel(card, 34, Color.WHITE, -CARD_W / 2 + 64, 0, up.char);
         this.makeLabel(card, 26, Color.WHITE, -CARD_W / 2 + 120, 22, up.name, 0);
-        this.makeLabel(card, 19, new Color(159, 176, 208), -CARD_W / 2 + 120, -20, up.desc, 0);
+        // 描述限宽 290、盒高 46（两行）内自动换行并裁剪，避开右侧价格标签与锁定按钮
+        const desc = this.makeLabel(card, 19, new Color(159, 176, 208), -CARD_W / 2 + 120, -8, up.desc, 0);
+        const dt = desc.node.getComponent(UITransform);
+        dt.setAnchorPoint(0, 1);
+        dt.setContentSize(290, 46);
+        desc.overflow = Label.Overflow.CLAMP;
         card.on(Node.EventType.TOUCH_END, onTap);
         return card;
     }
@@ -3447,7 +3464,7 @@ let Overlays = Overlays_1 = class Overlays extends Component {
     /** 购买后局部刷新（价格/金币/售罄状态） */
     updateShop(offers, gold) {
         const wave = GameRoot.I.wave;
-        this.rebuildShop(offers, gold, wave, 8 + GameRoot.I.shopRerolls * 4);
+        this.rebuildShop(offers, gold, wave, GameRoot.I.nextRerollCost());
     }
     rebuildShop(offers, gold, wave, rerollCost) {
         this.shopCardsRoot.destroyAllChildren();
@@ -3488,14 +3505,27 @@ let Overlays = Overlays_1 = class Overlays extends Component {
             this.shopCardsRoot.addChild(card);
         });
         // 刷新货架 / 开始下一波（destroyAllChildren 已连同卡片一起清掉旧按钮，直接重建）
-        const reroll = this.makeBtn(this.shopCardsRoot, 300, 62, '#334155', '#e2e8f0', `刷新货架 ◆${rerollCost}`, 22, 0, -232, () => { GameRoot.I.rerollShop(); });
+        const reroll = this.makeBtn(this.shopCardsRoot, 300, 62, '#334155', '#e2e8f0', `刷新货架 ${rerollCost > 0 ? '◆' + rerollCost : '免费'}`, 22, 0, -232, () => { GameRoot.I.rerollShop(); });
         reroll.name = 'reroll';
+        this.makeSelFrame(reroll, 300, 62);
         const next = this.makeBtn(this.shopCardsRoot, 400, 84, '#66bb6a', '#0a2412', `开始第 ${wave + 1} 波  ⏎`, 30, 0, -328, () => { GameRoot.I.nextWave(); });
         next.name = 'next';
-        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格购买 · L 锁定 · 回车下一波');
+        this.makeSelFrame(next, 400, 84);
+        this.makeLabel(this.shopCardsRoot, 15, new Color(100, 116, 139), 0, -378, 'W/S 选择 · 空格确认 · L 锁定 · 回车下一波');
         // 键盘选中态
         this.shopSel = 0;
         this.highlightShop();
+    }
+    /** 为按钮加键盘选中高亮框（与卡片同款白色外框） */
+    makeSelFrame(btn, w, h) {
+        const hl = new Node('hl');
+        const hg = hl.addComponent(Graphics);
+        hg.strokeColor = Color.WHITE;
+        hg.lineWidth = 5;
+        hg.roundRect(-w / 2 - 7, -h / 2 - 7, w + 14, h + 14, 19);
+        hg.stroke();
+        hl.active = false;
+        btn.addChild(hl);
     }
     /** 卡片右下角锁定按钮：锁定后该道具刷新与下一波都原位保留 */
     makeLockBtn(card, offerIndex, locked) {
@@ -3518,17 +3548,17 @@ let Overlays = Overlays_1 = class Overlays extends Component {
         card.addChild(btn);
     }
     highlightShop() {
-        // 卡片节点（带高亮框子节点的即卡片；按钮/文本无 hl 子节点自动跳过）
-        const cardNodes = this.shopCardsRoot.children.filter(n => n.getChildByName('hl'));
-        cardNodes.forEach(n => {
+        // 可选项（卡片与按钮均有 hl 选中框；文本/售罄占位自动跳过）
+        const nodes = this.shopSelectable();
+        nodes.forEach(n => {
             const hl = n.getChildByName('hl');
             if (hl) {
                 hl.active = false;
             }
             n.setScale(1, 1, 1);
         });
-        if (cardNodes[this.shopSel]) {
-            const n = cardNodes[this.shopSel];
+        if (nodes[this.shopSel]) {
+            const n = nodes[this.shopSel];
             const hl = n.getChildByName('hl');
             if (hl) {
                 hl.active = true;
@@ -3539,23 +3569,40 @@ let Overlays = Overlays_1 = class Overlays extends Component {
     moveShopSel(d) {
         if (!this.shopPanel.active)
             return;
-        const n = this.shopCardsRoot.children.filter(c => c.getChildByName('hl')).length;
+        const n = this.shopSelectable().length;
         if (n === 0)
             return;
         this.shopSel = (this.shopSel + d + n) % n;
         SoundFX.I.pick();
         this.highlightShop();
     }
-    /** 键盘当前选中卡片对应的商店槽位下标（卡片 name 为 offer{i}，售罄占位无卡片会被跳过） */
+    /** 商店键盘可选项：道具卡 + 刷新货架 + 开始下一波（均有名为 hl 的选中框子节点，按从上到下顺序） */
+    shopSelectable() {
+        return this.shopCardsRoot.children.filter(n => n.getChildByName('hl'));
+    }
+    selectedNode() {
+        return this.shopSelectable()[this.shopSel] || null;
+    }
+    /** 键盘当前选中卡片对应的商店槽位下标（卡片 name 为 offer{i}；选中按钮时返回 -1） */
     selectedOfferIndex() {
-        const cardNodes = this.shopCardsRoot.children.filter(n => n.getChildByName('hl'));
-        const n = cardNodes[this.shopSel];
-        const m = n && /^offer(\d+)$/.exec(n.name);
+        const m = /^offer(\d+)$/.exec(this.selectedNode() ? this.selectedNode().name : '');
         return m ? parseInt(m[1], 10) : -1;
     }
+    /** 空格确认：卡片=购买，刷新货架=重摇，开始下一波=出航 */
     confirmShopSel() {
         if (!this.shopPanel.active)
             return;
+        const sel = this.selectedNode();
+        if (!sel)
+            return;
+        if (sel.name === 'reroll') {
+            GameRoot.I.rerollShop();
+            return;
+        }
+        if (sel.name === 'next') {
+            GameRoot.I.nextWave();
+            return;
+        }
         const idx = this.selectedOfferIndex();
         if (idx >= 0) {
             GameRoot.I.buyShopOffer(idx);
